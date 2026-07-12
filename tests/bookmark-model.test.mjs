@@ -14,6 +14,11 @@ function loadBookmarkModel() {
 test("read-later is an independent expiring marker, not a category", () => {
   const model = loadBookmarkModel();
   const now = Date.parse("2026-07-12T10:00:00.000Z");
+  assert.equal(model.DEFAULT_READ_LATER_DURATION_MS, 7 * 24 * 60 * 60 * 1000);
+  assert.equal(model.normalizeReadLaterExpiryDays(undefined), 7);
+  assert.equal(model.normalizeReadLaterExpiryDays("14"), 14);
+  assert.equal(model.defaultReadLaterUntil({ readLaterDefaultExpiryDays: 0 }, now), null);
+  assert.equal(model.defaultReadLaterUntil({ readLaterDefaultExpiryDays: 3 }, now), "2026-07-15T10:00:00.000Z");
 
   assert.deepEqual(
     [...model.normalizeCategories(["技术开发", "稍后阅读", "技术开发"])],

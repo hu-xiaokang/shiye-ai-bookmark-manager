@@ -80,7 +80,9 @@ Untranslated strings fall back to Simplified Chinese, so a new locale can be int
 - Save and edit the current page.
 - Scan existing Chrome bookmarks, preview new, linked, and duplicate items, then organize them in bulk with AI.
 - Edit bookmark titles, URLs, categories, summaries, and tags.
-- Mark bookmarks as **Read later**, prioritize the nearest expiration, and automatically clear the marker when it expires.
+- Use a compact card action menu to edit, delete, or mark a bookmark as **Read later**, with nearest-expiration ordering.
+- Frequently and recently visited cards open on click, expose no bookmark-management menu, and can be marked independently for later.
+- Configure the default Read later duration as 1, 3, 7, 14, or 30 days, or choose no expiration.
 - Automatically classify, tag, and summarize pages with AI.
 - Prefer authenticated, dynamically rendered content from open browser tabs, including accessible embedded frames.
 - Score AI classification confidence and optionally review a low-confidence bookmark once when its full page content becomes available.

@@ -179,4 +179,11 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   const expiredRecord = localStore.bookmarks.find(item => item.id === reviewed.id);
   assert.equal(expiredRecord.readLater, false);
   assert.equal(expiredRecord.readLaterUntil, null);
+
+  localStore.readLaterItems = [{
+    id: "history-marker", title: "History page", url: "https://history.example.com",
+    readLater: true, readLaterUntil: new Date(Date.now() - 1000).toISOString()
+  }];
+  await context.clearExpiredReadLaterMarkers();
+  assert.deepEqual(localStore.readLaterItems, []);
 });

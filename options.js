@@ -32,12 +32,14 @@ async function init() {
   settings.autoDeleteWithNative = settings.autoDeleteWithNative ?? true;
   settings.autoReclassifyLowConfidenceOnOpen = settings.autoReclassifyLowConfidenceOnOpen ?? true;
   settings.lowConfidenceThreshold = Number(settings.lowConfidenceThreshold ?? 0.6);
+  settings.readLaterDefaultExpiryDays = BookmarkModel.normalizeReadLaterExpiryDays(settings.readLaterDefaultExpiryDays);
   settings.language = settings.language || "auto";
   $("languageSelect").value = settings.language;
   $("autoClassifyOnSave").checked = settings.autoClassifyOnSave;
   $("autoDeleteWithNative").checked = settings.autoDeleteWithNative;
   $("autoReclassifyLowConfidenceOnOpen").checked = settings.autoReclassifyLowConfidenceOnOpen;
   $("lowConfidenceThreshold").value = String(settings.lowConfidenceThreshold);
+  $("readLaterDefaultExpiryDays").value = String(settings.readLaterDefaultExpiryDays);
   renderCategories();
   renderUsage();
   renderAiQueue();
@@ -55,6 +57,7 @@ function readForm() {
     autoDeleteWithNative: $("autoDeleteWithNative").checked,
     autoReclassifyLowConfidenceOnOpen: $("autoReclassifyLowConfidenceOnOpen").checked,
     lowConfidenceThreshold: Number($("lowConfidenceThreshold").value),
+    readLaterDefaultExpiryDays: BookmarkModel.normalizeReadLaterExpiryDays($("readLaterDefaultExpiryDays").value),
     language: $("languageSelect").value
   };
 }
@@ -371,14 +374,14 @@ async function removeCategory(index) {
 }
 
 async function exportData() {
-  const data = await chrome.storage.local.get(["bookmarks", "settings", "modelUsage", "recycleBin"]);
+  const data = await chrome.storage.local.get(["bookmarks", "readLaterItems", "settings", "modelUsage", "recycleBin"]);
   const exportedSettings = { ...(data.settings || {}) };
   const includeApiKey = $("includeApiKey").checked;
   if (!includeApiKey) delete exportedSettings.apiKey;
   const payload = {
     format: "shiye-backup", version: 2, exportedAt: new Date().toISOString(),
     security: { includesApiKey: includeApiKey },
-    bookmarks: data.bookmarks || [], recycleBin: data.recycleBin || [], settings: exportedSettings,
+    bookmarks: data.bookmarks || [], readLaterItems: data.readLaterItems || [], recycleBin: data.recycleBin || [], settings: exportedSettings,
     modelUsage: data.modelUsage || {}
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -426,10 +429,12 @@ async function applyImport(mode) {
   const nextSettings = { ...settings, ...importedSettings, apiKey: importedSettings.apiKey || settings.apiKey || "" };
   const updates = {
     bookmarks: nextBookmarks,
+    readLaterItems: mode === "replace" ? (data.readLaterItems || []) : undefined,
     settings: nextSettings,
     recycleBin: mode === "replace" ? (data.recycleBin || []) : [...recycleBinCache, ...(data.recycleBin || [])],
     ...(data.modelUsage ? { modelUsage: data.modelUsage } : {})
   };
+  if (updates.readLaterItems === undefined) delete updates.readLaterItems;
   await chrome.storage.local.set(updates);
   closeImportPreview();
   toast(mode === "replace" ? l(`已恢复 ${nextBookmarks.length} 个收藏`, `Restored ${nextBookmarks.length} bookmarks`) : l(`已合并导入，处理 ${duplicates} 个重复网址`, `Import merged; processed ${duplicates} duplicate URLs`));
@@ -521,6 +526,7 @@ $("autoClassifyOnSave").addEventListener("change", persistBehavior);
 $("autoDeleteWithNative").addEventListener("change", persistBehavior);
 $("autoReclassifyLowConfidenceOnOpen").addEventListener("change", persistBehavior);
 $("lowConfidenceThreshold").addEventListener("change", persistBehavior);
+$("readLaterDefaultExpiryDays").addEventListener("change", persistBehavior);
 $("refreshUsageBtn").addEventListener("click", refreshUsage);
 $("resetUsageBtn").addEventListener("click", resetUsage);
 $("retryAllAiBtn").addEventListener("click", retryAllAi);

@@ -45,6 +45,15 @@
                 <label class="toggle"><input id="autoReclassifyLowConfidenceOnOpen" type="checkbox" /><i></i></label>
               </div>
             </div>
+            <div class="behavior-row">
+              <div><strong>稍后阅读默认到期时间</strong><span>通过卡片快捷标记或新建收藏时，自动使用这个期限；单条网址仍可单独修改</span></div>
+              <div class="behavior-controls">
+                <select id="readLaterDefaultExpiryDays" aria-label="稍后阅读默认到期时间">
+                  <option value="1">1 天后</option><option value="3">3 天后</option><option value="7">7 天后</option>
+                  <option value="14">14 天后</option><option value="30">30 天后</option><option value="0">永不到期</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div class="ai-queue-panel">
             <div><strong>AI 整理队列</strong><span id="aiQueueSummary">正在统计待处理收藏…</span></div>

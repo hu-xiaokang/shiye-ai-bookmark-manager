@@ -19,16 +19,20 @@ let nativeImportRunning = false;
 const confidenceReprocessQueue = new Set();
 
 async function clearExpiredReadLaterMarkers(now = Date.now()) {
-  const data = await chrome.storage.local.get("bookmarks");
-  let changed = false;
+  const data = await chrome.storage.local.get(["bookmarks", "readLaterItems"]);
+  let bookmarksChanged = false;
   const bookmarks = (data.bookmarks || []).map(bookmark => {
     const expiresAt = BookmarkModel.expiryTime(bookmark.readLaterUntil);
     if (!bookmark.readLater || expiresAt == null || expiresAt > now) return bookmark;
-    changed = true;
+    bookmarksChanged = true;
     return { ...bookmark, readLater: false, readLaterUntil: null, updatedAt: new Date(now).toISOString() };
   });
-  if (changed) await chrome.storage.local.set({ bookmarks });
-  return changed;
+  const readLaterItems = (data.readLaterItems || []).filter(item => BookmarkModel.isReadLaterActive(item, now));
+  const readLaterItemsChanged = readLaterItems.length !== (data.readLaterItems || []).length;
+  if (bookmarksChanged || readLaterItemsChanged) {
+    await chrome.storage.local.set({ ...(bookmarksChanged ? { bookmarks } : {}), ...(readLaterItemsChanged ? { readLaterItems } : {}) });
+  }
+  return bookmarksChanged || readLaterItemsChanged;
 }
 
 async function ensureReadLaterExpiryAlarm() {
