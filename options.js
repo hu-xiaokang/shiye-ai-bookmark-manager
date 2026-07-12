@@ -5,10 +5,15 @@ let bookmarksCache = [];
 let recycleBinCache = [];
 let pendingImport = null;
 const $ = id => document.getElementById(id);
+const t = (source, params) => I18n.t(source, params);
+const locale = () => I18n.language === "en" ? "en-US" : "zh-CN";
+const categoryLabel = category => t(category);
+const l = (zh, en) => I18n.language === "en" ? en : zh;
 
 async function init() {
   const data = await chrome.storage.local.get(["settings", "modelUsage", "bookmarks", "recycleBin", "lastSafetyBackup"]);
   settings = sanitizeSettings(data.settings || {});
+  await I18n.init(settings);
   usageStats = data.modelUsage || {};
   bookmarksCache = Array.isArray(data.bookmarks) ? data.bookmarks : [];
   recycleBinCache = Array.isArray(data.recycleBin) ? data.recycleBin : [];
@@ -18,6 +23,8 @@ async function init() {
   settings.categories = settings.categories || [...DEFAULT_CATEGORIES];
   settings.autoClassifyOnSave = settings.autoClassifyOnSave ?? true;
   settings.autoDeleteWithNative = settings.autoDeleteWithNative ?? true;
+  settings.language = settings.language || "auto";
+  $("languageSelect").value = settings.language;
   $("autoClassifyOnSave").checked = settings.autoClassifyOnSave;
   $("autoDeleteWithNative").checked = settings.autoDeleteWithNative;
   renderCategories();
@@ -32,50 +39,51 @@ function readForm() {
     apiUrl: $("apiUrl").value.trim(), apiKey: $("apiKey").value.trim(), model: $("modelName").value.trim(),
     categories: settings.categories,
     autoClassifyOnSave: $("autoClassifyOnSave").checked,
-    autoDeleteWithNative: $("autoDeleteWithNative").checked
+    autoDeleteWithNative: $("autoDeleteWithNative").checked,
+    language: $("languageSelect").value
   };
 }
 
 async function persistBehavior() {
   settings = readForm();
   await chrome.storage.local.set({ settings });
-  toast("默认行为已更新");
+  toast(t("默认行为已更新"));
 }
 
 async function saveSettings() {
   const next = readForm();
-  if (!next.apiUrl || !next.apiKey || !next.model) return toast("请完整填写模型配置");
+  if (!next.apiUrl || !next.apiKey || !next.model) return toast(t("请完整填写模型配置"));
   settings = next;
   await chrome.storage.local.set({ settings });
-  toast("配置已保存");
+  toast(t("配置已保存"));
 }
 
 async function testConnection() {
   const next = readForm();
   const result = $("testResult");
   result.className = "result";
-  result.textContent = "正在连接模型…";
+  result.textContent = t("正在连接模型…");
   $("testBtn").disabled = true;
   let usageRecorded = false;
   let requestStarted = false;
   try {
-    if (!next.apiUrl || !next.apiKey || !next.model) throw new Error("请先完整填写模型配置");
+    if (!next.apiUrl || !next.apiKey || !next.model) throw new Error(t("请先完整填写模型配置"));
     requestStarted = true;
     const response = await fetch(normalizeEndpoint(next.apiUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${next.apiKey}` },
-      body: JSON.stringify({ model: next.model, temperature: 0, max_tokens: 8, messages: [{ role: "user", content: "只回复：连接成功" }] })
+      body: JSON.stringify({ model: next.model, temperature: 0, max_tokens: 8, messages: [{ role: "user", content: I18n.language === "en" ? "Reply only: Connected" : "只回复：连接成功" }] })
     });
     if (!response.ok) {
       usageRecorded = true;
       await reportModelUsage("connection_test", null, false, next.model);
-      throw new Error(`连接失败（HTTP ${response.status}）`);
+      throw new Error(I18n.language === "en" ? `Connection failed (HTTP ${response.status})` : `连接失败（HTTP ${response.status}）`);
     }
     const data = await response.json();
     usageRecorded = true;
     await reportModelUsage("connection_test", data.usage, true, next.model);
-    if (!data.choices?.[0]) throw new Error("接口返回格式不兼容");
-    result.textContent = `连接成功，模型 ${next.model} 可以使用。`;
+    if (!data.choices?.[0]) throw new Error(I18n.language === "en" ? "Incompatible API response" : "接口返回格式不兼容");
+    result.textContent = I18n.language === "en" ? `Connected. Model ${next.model} is available.` : `连接成功，模型 ${next.model} 可以使用。`;
   } catch (error) {
     if (requestStarted && !usageRecorded) await reportModelUsage("connection_test", null, false, next.model);
     result.classList.add("error");
@@ -92,12 +100,12 @@ function renderUsage() {
   const today = stats.daily?.[usageDateKey()] || {};
   $("usageToday").textContent = `${formatNumber(today.totalTokens || 0)} Token`;
   $("usageSuccess").textContent = `${formatNumber(stats.successful || 0)} / ${formatNumber(stats.failed || 0)}`;
-  $("usageLastUsed").textContent = stats.lastUsedAt ? new Date(stats.lastUsedAt).toLocaleString("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "暂无";
+  $("usageLastUsed").textContent = stats.lastUsedAt ? new Date(stats.lastUsedAt).toLocaleString(locale(), { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : t("暂无");
   const features = [
-    ["auto_classification", "自动分类与摘要", "auto"],
-    ["classification", "手动 AI 分类", "classify"],
-    ["summary", "单独生成摘要", "summary"],
-    ["connection_test", "模型连接测试", "test"]
+    ["auto_classification", t("自动分类与摘要"), "auto"],
+    ["classification", t("手动 AI 分类"), "classify"],
+    ["summary", t("单独生成摘要"), "summary"],
+    ["connection_test", t("模型连接测试"), "test"]
   ];
   $("usageFeatureList").innerHTML = features.map(([key, label, tone]) => {
     const value = stats.byFeature?.[key] || {};
@@ -109,7 +117,7 @@ function usageDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 }
 
-function formatNumber(value) { return Number(value || 0).toLocaleString("zh-CN"); }
+function formatNumber(value) { return Number(value || 0).toLocaleString(locale()); }
 
 async function reportModelUsage(feature, usage, success, model) {
   try {
@@ -124,38 +132,38 @@ async function refreshUsage() {
 }
 
 async function resetUsage() {
-  if (!confirm("确定清空全部模型用量统计吗？此操作无法撤销。")) return;
+  if (!confirm(I18n.language === "en" ? "Clear all model usage statistics? This cannot be undone." : "确定清空全部模型用量统计吗？此操作无法撤销。")) return;
   await chrome.storage.local.remove("modelUsage");
   usageStats = {};
   renderUsage();
-  toast("模型用量统计已清空");
+  toast(I18n.language === "en" ? "Model usage statistics cleared" : "模型用量统计已清空");
 }
 
 function renderCategories() {
-  $("categoryList").innerHTML = settings.categories.map((category, index) => `<span class="category-chip">${escapeHtml(category)}<button data-index="${index}" title="删除">×</button></span>`).join("");
+  $("categoryList").innerHTML = settings.categories.map((category, index) => `<span class="category-chip">${escapeHtml(categoryLabel(category))}<button data-index="${index}" title="${escapeHtml(t("删除"))}">×</button></span>`).join("");
 }
 
 function renderAiQueue() {
   const failed = bookmarksCache.filter(item => item.aiStatus === "failed").length;
   const pending = bookmarksCache.filter(item => item.aiStatus === "pending" || item.aiStatus === "processing").length;
   const incomplete = bookmarksCache.filter(item => !item.summary).length;
-  $("aiQueueSummary").textContent = `失败 ${failed} · 处理中/等待 ${pending} · 缺少摘要 ${incomplete}`;
+  $("aiQueueSummary").textContent = I18n.language === "en" ? `Failed ${failed} · Processing/waiting ${pending} · Missing summary ${incomplete}` : `失败 ${failed} · 处理中/等待 ${pending} · 缺少摘要 ${incomplete}`;
   $("retryAllAiBtn").disabled = !bookmarksCache.some(item => item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary);
 }
 
 async function retryAllAi() {
-  if (!settings.apiUrl || !settings.apiKey || !settings.model) return toast("请先完成模型配置");
+  if (!settings.apiUrl || !settings.apiKey || !settings.model) return toast(I18n.language === "en" ? "Complete the model configuration first" : "请先完成模型配置");
   const button = $("retryAllAiBtn");
   button.disabled = true;
-  button.textContent = "正在批量处理…";
+  button.textContent = I18n.language === "en" ? "Processing…" : "正在批量处理…";
   try {
     const result = await chrome.runtime.sendMessage({ type: "retry-all-ai" });
-    if (!result?.success) throw new Error(result?.error || "批量处理失败");
-    toast(`处理完成：${result.completed}/${result.total}`);
+    if (!result?.success) throw new Error(result?.error || (I18n.language === "en" ? "Batch processing failed" : "批量处理失败"));
+    toast(I18n.language === "en" ? `Completed: ${result.completed}/${result.total}` : `处理完成：${result.completed}/${result.total}`);
   } catch (error) {
-    toast(error.message || "批量处理失败");
+    toast(error.message || (I18n.language === "en" ? "Batch processing failed" : "批量处理失败"));
   } finally {
-    button.textContent = "重新处理失败与缺失内容";
+    button.textContent = t("重新处理失败与缺失内容");
     const data = await chrome.storage.local.get("bookmarks");
     bookmarksCache = data.bookmarks || [];
     renderAiQueue();
@@ -180,9 +188,10 @@ async function removeCategory(index) {
   let target = "";
   if (affected.length || affectedTrash.length) {
     const available = settings.categories.filter((_, itemIndex) => itemIndex !== index);
-    target = prompt(`“${category}”中有 ${affected.length} 个收藏，回收站中有 ${affectedTrash.length} 个。请输入迁移目标分类：\n${available.join("、")}`, available[0] || "稍后阅读");
-    if (target === null) return;
-    target = target.trim();
+    const availableLabels = available.map(categoryLabel);
+    const input = prompt(l(`“${category}”中有 ${affected.length} 个收藏，回收站中有 ${affectedTrash.length} 个。请输入迁移目标分类：\n${available.join("、")}`, `“${categoryLabel(category)}” contains ${affected.length} bookmarks and ${affectedTrash.length} trash items. Enter a target category:\n${availableLabels.join(", ")}`), categoryLabel(available[0] || "稍后阅读"));
+    if (input === null) return;
+    target = available.find(item => item === input.trim() || categoryLabel(item) === input.trim()) || "";
     if (!available.includes(target)) return toast("请输入现有的目标分类");
   }
   await createSafetySnapshot("delete-category");
@@ -192,7 +201,7 @@ async function removeCategory(index) {
   await chrome.storage.local.set({ settings: readForm(), bookmarks: bookmarksCache, recycleBin: recycleBinCache });
   renderCategories();
   const migrated = affected.length + affectedTrash.length;
-  toast(migrated ? `分类已删除，${migrated} 个收藏已迁移` : "分类已删除");
+  toast(migrated ? l(`分类已删除，${migrated} 个收藏已迁移`, `Category deleted; ${migrated} bookmarks migrated`) : t("分类已删除"));
 }
 
 async function exportData() {
@@ -208,7 +217,7 @@ async function exportData() {
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob); const a = document.createElement("a");
-  a.href = url; a.download = `拾页备份-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
+  a.href = url; a.download = `${I18n.language === "en" ? "shiye-backup" : "拾页备份"}-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
   toast(includeApiKey ? "备份已导出，请安全保管其中的 API Key" : "安全备份已导出（不含 API Key）");
 }
 
@@ -220,10 +229,12 @@ async function importData(file) {
     const localByUrl = new Map(bookmarksCache.map(item => [canonicalUrl(item.url), item]));
     const duplicates = data.bookmarks.filter(item => localByUrl.has(canonicalUrl(item.url))).length;
     pendingImport = { data, duplicates, fileName: file.name };
-    $("importPreviewStats").innerHTML = `<span><strong>${data.bookmarks.length}</strong> 个收藏</span><span><strong>${duplicates}</strong> 个重复</span><span><strong>${(data.recycleBin || []).length}</strong> 个回收站项目</span>`;
-    $("importPreviewNote").textContent = data.security?.includesApiKey || data.settings?.apiKey
+    $("importPreviewStats").innerHTML = I18n.language === "en"
+      ? `<span><strong>${data.bookmarks.length}</strong> bookmarks</span><span><strong>${duplicates}</strong> duplicates</span><span><strong>${(data.recycleBin || []).length}</strong> trash items</span>`
+      : `<span><strong>${data.bookmarks.length}</strong> 个收藏</span><span><strong>${duplicates}</strong> 个重复</span><span><strong>${(data.recycleBin || []).length}</strong> 个回收站项目</span>`;
+    $("importPreviewNote").textContent = t(data.security?.includesApiKey || data.settings?.apiKey
       ? "此备份包含 API Key。导入后会保存到当前浏览器。"
-      : "此备份不包含 API Key，将保留当前浏览器中的模型密钥。";
+      : "此备份不包含 API Key，将保留当前浏览器中的模型密钥。");
     $("importPreview").classList.remove("hidden");
   } catch (error) { toast(error.message || "导入失败"); }
 }
@@ -255,7 +266,7 @@ async function applyImport(mode) {
   };
   await chrome.storage.local.set(updates);
   closeImportPreview();
-  toast(mode === "replace" ? `已恢复 ${nextBookmarks.length} 个收藏` : `已合并导入，处理 ${duplicates} 个重复网址`);
+  toast(mode === "replace" ? l(`已恢复 ${nextBookmarks.length} 个收藏`, `Restored ${nextBookmarks.length} bookmarks`) : l(`已合并导入，处理 ${duplicates} 个重复网址`, `Import merged; processed ${duplicates} duplicate URLs`));
   await init();
 }
 
@@ -316,7 +327,7 @@ async function restoreSafetySnapshot() {
   const data = await chrome.storage.local.get(["lastSafetyBackup", "bookmarks", "settings", "recycleBin", "modelUsage"]);
   const snapshot = data.lastSafetyBackup;
   if (!snapshot?.bookmarks) return toast("暂无可恢复的安全快照");
-  if (!confirm(`确定恢复 ${new Date(snapshot.createdAt).toLocaleString("zh-CN")} 的安全快照吗？`)) return;
+  if (!confirm(l(`确定恢复 ${new Date(snapshot.createdAt).toLocaleString("zh-CN")} 的安全快照吗？`, `Restore the safety snapshot from ${new Date(snapshot.createdAt).toLocaleString("en-US")}?`))) return;
   await chrome.storage.local.set({
     bookmarks: snapshot.bookmarks || [], settings: snapshot.settings || settings,
     recycleBin: snapshot.recycleBin || [], modelUsage: snapshot.modelUsage || {},
@@ -331,7 +342,7 @@ async function restoreSafetySnapshot() {
 }
 
 async function clearBookmarksSafely() {
-  if (!confirm("确定将所有收藏移入回收站吗？30 天内可以恢复。")) return;
+  if (!confirm(l("确定将所有收藏移入回收站吗？30 天内可以恢复。", "Move all bookmarks to trash? They can be restored within 30 days."))) return;
   await createSafetySnapshot("clear-bookmarks");
   const now = Date.now();
   const recycleBin = [...bookmarksCache.map(bookmark => ({ id: crypto.randomUUID(), bookmark, deletedAt: now, reason: "clear-all" })), ...recycleBinCache];
@@ -344,9 +355,16 @@ async function clearBookmarksSafely() {
 
 function normalizeEndpoint(url) { const clean = url.trim().replace(/\/$/, ""); if (/\/chat\/completions$/i.test(clean)) return clean; return /\/v1$/i.test(clean) ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`; }
 function escapeHtml(value="") { return String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function toast(message) { const el=$("toast"); el.textContent=message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove("show"),2200); }
+function toast(message) { const el=$("toast"); el.textContent=t(message); el.classList.add("show"); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove("show"),2200); }
 
-$("toggleKey").addEventListener("click", () => { const input=$("apiKey"); input.type=input.type==="password"?"text":"password"; $("toggleKey").textContent=input.type==="password"?"显示":"隐藏"; });
+async function changeLanguage() {
+  settings = readForm();
+  await chrome.storage.local.set({ settings });
+  location.reload();
+}
+
+$("toggleKey").addEventListener("click", () => { const input=$("apiKey"); input.type=input.type==="password"?"text":"password"; $("toggleKey").textContent=input.type==="password"?t("显示"):t("隐藏"); });
+$("languageSelect").addEventListener("change", changeLanguage);
 $("saveBtn").addEventListener("click", saveSettings);
 $("testBtn").addEventListener("click", testConnection);
 $("autoClassifyOnSave").addEventListener("change", persistBehavior);

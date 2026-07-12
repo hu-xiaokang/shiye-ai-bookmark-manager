@@ -1,5 +1,7 @@
 # 拾页 · AI 智能书签
 
+> 简体中文 | [English](README.en.md)
+
 <p align="center">
   <img src="assets/shiye-logo.svg" width="96" alt="拾页 Logo" />
 </p>
@@ -7,6 +9,23 @@
 > Local-first, BYOK AI bookmark manager for Chrome.
 
 拾页是一款本地优先、无需账号的 Chrome 智能书签管理器。它与 Chrome 原生书签联动，使用你自己配置的大模型自动分类、生成中文标签和内容摘要，并提供全库模糊搜索、常用网址、最近浏览、重复治理和安全恢复。
+
+## 界面预览
+
+<p align="center">
+  <img src="assets/screenshots/library-en.png" width="900" alt="拾页英文版网址分类与搜索主界面" />
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/save-bookmark-en.png" alt="新建收藏弹窗" /></td>
+    <td width="50%"><img src="assets/screenshots/ai-organized-en.png" alt="AI 自动分类、摘要与标签结果" /></td>
+  </tr>
+  <tr>
+    <td align="center">收藏当前网页</td>
+    <td align="center">AI 分类、摘要与标签</td>
+  </tr>
+</table>
 
 ## 核心特点
 
@@ -17,6 +36,7 @@
 - **搜索优先**：搜索标题、摘要、标签、分类、网址和域名。
 - **长期可靠**：提供回收站、重复合并、安全快照与导入预检。
 - **无需构建**：原生 HTML、CSS、JavaScript，下载后即可加载。
+- **多语言**：内置简体中文和英文，支持跟随浏览器语言，并可继续扩展其他语言。
 
 ## 安装
 
@@ -57,6 +77,11 @@
 - AI 整理队列：展示等待、处理中、完成和失败状态，支持单条重试与批量补处理
 - 安全备份：默认排除 API Key，导入前预检重复项，支持合并导入、覆盖恢复和操作前安全快照
 - JSON 数据导入、导出和安全清空
+- 界面语言可选择跟随浏览器、简体中文或英文；AI 标签和摘要会使用对应语言生成
+
+## 多语言扩展
+
+运行时界面翻译集中在 `i18n.js`，Chrome 扩展名称、描述和右键菜单翻译位于 `_locales/`。新增语言时，添加一份资源表、设置页选项和对应的 `_locales/<locale>/messages.json` 即可；未翻译文案会自动回退到简体中文。
 
 ## 隐私说明
 
@@ -68,6 +93,8 @@
 
 ```text
 ├── manifest.json       # Chrome Manifest V3 清单
+├── i18n.js             # 界面多语言资源与翻译工具
+├── _locales/           # Chrome 扩展名称、描述和右键菜单翻译
 ├── background.js       # 原生书签同步、AI 队列、浏览统计
 ├── popup.html/js/css   # 插件主界面
 ├── options.html/js/css # 设置和数据管理

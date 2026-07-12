@@ -7,4 +7,7 @@ dist/
 .env.*
 *.pem
 *.key
+shiye-backup-*.json
+拾页备份-*.json
+*backup*.json
 coverage/

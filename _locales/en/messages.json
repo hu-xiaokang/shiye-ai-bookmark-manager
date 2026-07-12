@@ -1,0 +1,6 @@
+{
+  "extensionName": { "message": "ShiYe · AI Bookmark Manager" },
+  "extensionDescription": { "message": "A local-first AI bookmark manager with automatic classification, summaries, tags, search, and Chrome bookmark sync." },
+  "actionTitle": { "message": "ShiYe" },
+  "contextMenuTitle": { "message": "Save to ShiYe" }
+}

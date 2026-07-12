@@ -7,6 +7,10 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const t = (source, params) => I18n.t(source, params);
+const categoryLabel = category => t(category);
+const viewLabel = view => t(view);
+const locale = () => I18n.language === "en" ? "en-US" : "zh-CN";
 const els = {
   title: $("titleInput"), url: $("urlText"), category: $("categorySelect"), ai: $("aiBtn"),
   aiResult: $("aiResult"), save: $("saveBtn"), list: $("bookmarkList"), empty: $("emptyState"),
@@ -34,9 +38,10 @@ async function init() {
   state.recycleBin = purgeExpiredTrash(Array.isArray(data.recycleBin) ? data.recycleBin : []);
   if (state.recycleBin.length !== (data.recycleBin || []).length) await chrome.storage.local.set({ recycleBin: state.recycleBin });
   state.settings = data.settings || {};
+  await I18n.init(state.settings);
   state.pendingNativeDeletions = Array.isArray(data.pendingNativeDeletions) ? data.pendingNativeDeletions : [];
   const categories = [...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
-  els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
+  els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(categoryLabel(c))}</option>`).join("");
   updateModelStatus();
   resetCaptureForm();
   await Promise.all([loadCurrentTab(), loadHistoryViews(data.browsingMetrics || {})]);
@@ -89,9 +94,9 @@ async function loadHistoryViews(metrics) {
 async function loadCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !/^https?:/i.test(tab.url || "")) {
-    els.title.value = "当前页面不支持收藏";
+    els.title.value = I18n.language === "en" ? "This page cannot be bookmarked" : "当前页面不支持收藏";
     els.url.value = "";
-    els.url.placeholder = "请打开一个普通网页后再试";
+    els.url.placeholder = I18n.language === "en" ? "Open a regular webpage and try again" : "请打开一个普通网页后再试";
     els.save.disabled = true;
     els.ai.disabled = true;
     els.summaryBtn.disabled = true;
@@ -104,9 +109,9 @@ async function loadCurrentTab() {
   const existing = state.bookmarks.find(b => canonicalUrl(b.url) === canonicalUrl(tab.url));
   if (existing) {
     state.editingBookmarkId = existing.id;
-    els.captureEyebrow.textContent = "编辑收藏";
-    els.captureTitle.textContent = "修改收藏信息";
-    els.save.textContent = "更新这个收藏";
+    els.captureEyebrow.textContent = t("编辑收藏");
+    els.captureTitle.textContent = t("修改收藏信息");
+    els.save.textContent = t("更新这个收藏");
     els.category.value = existing.category || "稍后阅读";
     state.currentTags = existing.tags || [];
     state.currentSummary = existing.summary || "";
@@ -122,8 +127,8 @@ function resetCaptureForm() {
   state.currentTabId = null;
   state.currentTags = [];
   state.currentSummary = "";
-  els.captureEyebrow.textContent = "新建收藏";
-  els.captureTitle.textContent = "收藏当前网页";
+  els.captureEyebrow.textContent = t("新建收藏");
+  els.captureTitle.textContent = t("收藏当前网页");
   els.title.value = "";
   els.url.value = "";
   els.url.placeholder = "https://example.com";
@@ -136,13 +141,13 @@ function resetCaptureForm() {
   els.save.disabled = false;
   els.ai.disabled = false;
   els.summaryBtn.disabled = false;
-  els.save.textContent = "确认收藏";
+  els.save.textContent = t("确认收藏");
 }
 
 function updateModelStatus() {
   const ready = Boolean(state.settings.apiUrl && state.settings.apiKey && state.settings.model);
   els.status.classList.toggle("ready", ready);
-  els.status.lastChild.textContent = ready ? `${state.settings.model} 已就绪` : "未配置模型";
+  els.status.lastChild.textContent = ready ? (I18n.language === "en" ? `${state.settings.model} ready` : `${state.settings.model} 已就绪`) : t("未配置模型");
 }
 
 function render() {
@@ -162,7 +167,7 @@ function render() {
     const kind = activityViews.includes(c) ? ` activity-icon activity-${index}` : "";
     const tone = getCategoryTone(c);
     return `<button class="filter-chip tone-${tone} ${c === state.activeFilter ? "active" : ""}" data-filter="${escapeAttr(c)}">
-      <span class="filter-icon${kind}">${escapeHtml(icon)}</span><span class="filter-name">${escapeHtml(c)}</span><span class="filter-count">${count}</span>
+      <span class="filter-icon${kind}">${escapeHtml(icon)}</span><span class="filter-name">${escapeHtml(viewLabel(c))}</span><span class="filter-count">${count}</span>
     </button>`;
   };
   els.filters.innerHTML = `
@@ -170,7 +175,7 @@ function render() {
       <div class="nav-items">${activityViews.map(renderFilter).join("")}</div>
     </section>
     <section class="nav-group category-group">
-      <div class="nav-group-title"><span>收藏分类</span><i>${state.bookmarks.length}</i></div>
+      <div class="nav-group-title"><span>${escapeHtml(t("收藏分类"))}</span><i>${state.bookmarks.length}</i></div>
       <div class="nav-items">${bookmarkCategories.map(renderFilter).join("")}</div>
     </section>`;
   els.recycle.classList.toggle("active", state.activeFilter === "回收站");
@@ -178,7 +183,7 @@ function render() {
   els.recycleCount.classList.toggle("hidden", state.recycleBin.length === 0);
   const keyword = state.search.trim().toLowerCase();
   const isBookmarkView = !activityViews.includes(state.activeFilter) && state.activeFilter !== "回收站";
-  els.viewTitle.textContent = keyword && isBookmarkView ? "搜索收藏" : state.activeFilter === "全部" ? "全部网站" : state.activeFilter;
+  els.viewTitle.textContent = keyword && isBookmarkView ? t("搜索收藏") : state.activeFilter === "全部" ? t("全部网站") : viewLabel(state.activeFilter);
   els.searchScope.classList.toggle("hidden", !keyword || !isBookmarkView);
   els.searchClear.classList.toggle("hidden", !keyword);
   els.searchShortcut.classList.toggle("hidden", Boolean(keyword));
@@ -191,14 +196,18 @@ function render() {
   const filtered = sourceItems.filter(item => {
     const searchableText = item.source === "history"
       ? [item.title, item.url].join(" ")
-      : [item.title, item.summary, item.url, item.category, ...(item.tags || [])].filter(Boolean).join(" ");
+      : [item.title, item.summary, item.url, item.category, categoryLabel(item.category), ...(item.tags || [])].filter(Boolean).join(" ");
     return !keyword || fuzzyMatch(searchableText, keyword);
   });
   if (keyword) filtered.sort((a, b) => searchResultScore(b, keyword) - searchResultScore(a, keyword));
   state.visibleItems = filtered;
 
-  const unit = state.activeFilter === "最近浏览" ? "条记录" : state.activeFilter === "常用网址" ? "个常用网站" : state.activeFilter === "回收站" ? "条待恢复" : "个收藏";
-  els.count.textContent = keyword ? `${isBookmarkView ? "全库" : "当前视图"}找到 ${filtered.length} 个结果` : `${filtered.length} ${unit}`;
+  const unit = I18n.language === "en"
+    ? state.activeFilter === "最近浏览" ? "records" : state.activeFilter === "常用网址" ? "frequent sites" : state.activeFilter === "回收站" ? "to restore" : "bookmarks"
+    : state.activeFilter === "最近浏览" ? "条记录" : state.activeFilter === "常用网址" ? "个常用网站" : state.activeFilter === "回收站" ? "条待恢复" : "个收藏";
+  els.count.textContent = keyword
+    ? (I18n.language === "en" ? `${isBookmarkView ? "All bookmarks" : "Current view"}: ${filtered.length} results` : `${isBookmarkView ? "全库" : "当前视图"}找到 ${filtered.length} 个结果`)
+    : `${filtered.length} ${unit}`;
 
   const bookmarkByUrl = new Map(state.bookmarks.map(bookmark => [canonicalUrl(bookmark.url), bookmark]));
   els.list.innerHTML = filtered.map(item => {
@@ -207,33 +216,35 @@ function render() {
     const isHistory = item.source === "history";
     const isTrash = item.source === "trash";
     const summary = isHistory
-      ? item.viewType === "common" ? `访问 ${item.visitCount || 0} 次${item.durationMs ? ` · 活跃浏览 ${formatDuration(item.durationMs)}` : ""}` : `最近访问：${relativeTime(item.lastVisitTime)}`
+      ? item.viewType === "common"
+        ? (I18n.language === "en" ? `${item.visitCount || 0} visits${item.durationMs ? ` · active for ${formatDuration(item.durationMs)}` : ""}` : `访问 ${item.visitCount || 0} 次${item.durationMs ? ` · 活跃浏览 ${formatDuration(item.durationMs)}` : ""}`)
+        : (I18n.language === "en" ? `Last visited: ${relativeTime(item.lastVisitTime)}` : `最近访问：${relativeTime(item.lastVisitTime)}`)
       : item.summary;
     const savedBookmark = isHistory ? bookmarkByUrl.get(canonicalUrl(item.url)) : null;
     const pill = savedBookmark?.category || (isHistory ? "" : (item.category || "未分类"));
     const pillTone = savedBookmark ? getCategoryTone(savedBookmark.category || "") : getCategoryTone(item.category || "");
-    const pillTitle = savedBookmark ? `已收藏到“${pill}”` : pill;
+    const pillTitle = savedBookmark ? (I18n.language === "en" ? `Saved to “${categoryLabel(pill)}”` : `已收藏到“${pill}”`) : categoryLabel(pill);
     const displayTags = (savedBookmark?.tags || item.tags || []).filter(Boolean).map(tag => String(tag).replace(/^#+\s*/, "")).slice(0, 3);
     const tagsMarkup = displayTags.map(tag => `<span class="content-tag">#${highlightSearchText(tag, keyword)}</span>`).join("");
     const editableId = isHistory ? savedBookmark?.id : item.id;
     const aiStatusMarkup = !isHistory && !isTrash ? renderAiStatus(item) : "";
     const actionsMarkup = isTrash
-      ? `<div class="card-actions trash-actions"><button class="restore-btn" data-trash-id="${escapeAttr(item.trashId)}" title="恢复收藏">恢复</button><button class="purge-btn" data-trash-id="${escapeAttr(item.trashId)}" title="彻底删除">×</button></div>`
+      ? `<div class="card-actions trash-actions"><button class="restore-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("恢复收藏"))}">${escapeHtml(t("恢复"))}</button><button class="purge-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("彻底删除"))}">×</button></div>`
       : isHistory
-      ? `<div class="card-actions">${editableId ? `<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="编辑收藏" aria-label="编辑收藏">✎</button>` : ""}<span class="open-hint">↗</span></div>`
-      : `<div class="card-actions">${item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary ? `<button class="retry-ai-btn" data-retry-id="${escapeAttr(item.id)}" title="重新进行 AI 整理">↻</button>` : ""}<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="编辑收藏" aria-label="编辑收藏">✎</button><button class="delete-btn" title="删除" aria-label="删除">×</button></div>`;
+      ? `<div class="card-actions">${editableId ? `<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="${escapeAttr(t("编辑收藏"))}" aria-label="${escapeAttr(t("编辑收藏"))}">✎</button>` : ""}<span class="open-hint">↗</span></div>`
+      : `<div class="card-actions">${item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary ? `<button class="retry-ai-btn" data-retry-id="${escapeAttr(item.id)}" title="${escapeAttr(t("重新进行 AI 整理"))}">↻</button>` : ""}<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="${escapeAttr(t("编辑收藏"))}" aria-label="${escapeAttr(t("编辑收藏"))}">✎</button><button class="delete-btn" title="${escapeAttr(t("删除"))}" aria-label="${escapeAttr(t("删除"))}">×</button></div>`;
     return `<article class="bookmark-card ${isHistory ? "history-card" : ""}" data-id="${escapeAttr(item.id)}">
       <div class="bookmark-main" title="${escapeAttr(summary || item.url)}">
         <div class="bookmark-title">${highlightSearchText(item.title || item.url, keyword)}</div>
         ${summary ? `<div class="bookmark-summary">${highlightSearchText(summary, keyword)}</div>` : ""}
-        <div class="bookmark-meta">${pill ? `<span class="category-pill pill-${pillTone}" title="${escapeAttr(pillTitle)}">${highlightSearchText(pill, keyword)}</span>` : ""}${tagsMarkup}${aiStatusMarkup}<span class="bookmark-host">${highlightSearchText(isTrash ? `删除于 ${relativeTime(item.deletedAt)}` : host, keyword)}</span></div>
+        <div class="bookmark-meta">${pill ? `<span class="category-pill pill-${pillTone}" title="${escapeAttr(pillTitle)}">${highlightSearchText(categoryLabel(pill), keyword)}</span>` : ""}${tagsMarkup}${aiStatusMarkup}<span class="bookmark-host">${highlightSearchText(isTrash ? (I18n.language === "en" ? `Deleted ${relativeTime(item.deletedAt)}` : `删除于 ${relativeTime(item.deletedAt)}`) : host, keyword)}</span></div>
       </div>
       ${actionsMarkup}
     </article>`;
   }).join("");
   els.empty.classList.toggle("hidden", filtered.length !== 0);
-  els.emptyTitle.textContent = keyword ? "没有找到匹配的网址" : "这里还没有网站";
-  els.emptyDescription.textContent = keyword ? "试试更短的关键词，或搜索摘要、标签和域名" : "收藏当前网页，或切换其他分类看看";
+  els.emptyTitle.textContent = keyword ? t("没有找到匹配的网址") : t("这里还没有网站");
+  els.emptyDescription.textContent = keyword ? t("试试更短的关键词，或搜索摘要、标签和域名") : t("收藏当前网页，或切换其他分类看看");
 }
 
 function highlightSearchText(value, query) {
@@ -271,8 +282,8 @@ function searchResultScore(item, query) {
 function renderAiStatus(item) {
   const status = item.aiStatus || (item.summary ? "completed" : "idle");
   const labels = {
-    pending: ["等待整理", "pending"], processing: ["AI 整理中", "processing"],
-    completed: ["AI 已整理", "completed"], failed: ["整理失败", "failed"]
+    pending: [t("等待整理"), "pending"], processing: [t("AI 整理中"), "processing"],
+    completed: [t("AI 已整理"), "completed"], failed: [t("整理失败"), "failed"]
   };
   if (!labels[status]) return "";
   const [label, tone] = labels[status];
@@ -287,19 +298,20 @@ function purgeExpiredTrash(items) {
 
 async function classifyWithAI(usageFeature = "classification") {
   if (!state.settings.apiUrl || !state.settings.apiKey || !state.settings.model) {
-    showToast("请先配置模型 URL、Key 和模型名");
+    showToast(I18n.language === "en" ? "Configure the model URL, key, and model name first" : "请先配置模型 URL、Key 和模型名");
     chrome.runtime.openOptionsPage();
     return;
   }
-  if (!syncCurrentUrlFromForm()) return showToast("请输入有效的 HTTP 或 HTTPS 网址");
+  if (!syncCurrentUrlFromForm()) return showToast(I18n.language === "en" ? "Enter a valid HTTP or HTTPS URL" : "请输入有效的 HTTP 或 HTTPS 网址");
   els.ai.disabled = true;
   els.summaryBtn.disabled = true;
-  els.ai.querySelector("span").textContent = "正在分析…";
+  els.ai.querySelector("span").textContent = t("正在分析…");
   let usageRecorded = false;
   let requestStarted = false;
   try {
     const categories = state.settings.categories || DEFAULT_CATEGORIES;
     const endpoint = normalizeEndpoint(state.settings.apiUrl);
+    const categoryCandidates = categories.map(category => `${category}${categoryLabel(category) !== category ? ` (${categoryLabel(category)})` : ""}`).join(", ");
     const pageContent = await extractPageContent();
     requestStarted = true;
     const response = await fetch(endpoint, {
@@ -309,8 +321,12 @@ async function classifyWithAI(usageFeature = "classification") {
         model: state.settings.model,
         temperature: 0.2,
         messages: [
-          { role: "system", content: `你是网址收藏整理助手。请根据网页标题、网址和正文，从候选分类中选择最合适的一项，并生成2-4个简短中文标签和60-120字的中文内容摘要。摘要应概括核心主题、主要信息和网页用途，不能编造。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
-          { role: "user", content: `标题：${els.title.value}\n网址：${state.currentUrl}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
+          { role: "system", content: I18n.language === "en"
+            ? `You organize web bookmarks. Select exactly one category identifier from the candidates and generate 2-4 short English tags plus a concise 40-90 word English summary. Cover the core topic, key information, and intended use without inventing facts. Return JSON only: {"category":"exact identifier","tags":["tag"],"summary":"summary"}. Candidates: ${categoryCandidates}`
+            : `你是网址收藏整理助手。请根据网页标题、网址和正文，从候选分类中选择最合适的一项，并生成2-4个简短中文标签和60-120字的中文内容摘要。摘要应概括核心主题、主要信息和网页用途，不能编造。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
+          { role: "user", content: I18n.language === "en"
+            ? `Title: ${els.title.value}\nURL: ${state.currentUrl}\nPage content:\n${pageContent || "Page content is unavailable. Infer from the title and URL."}`
+            : `标题：${els.title.value}\n网址：${state.currentUrl}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
         ]
       })
     });
@@ -318,13 +334,13 @@ async function classifyWithAI(usageFeature = "classification") {
       usageRecorded = true;
       await reportModelUsage(usageFeature, null, false);
       const error = await response.text();
-      throw new Error(`请求失败（${response.status}）${error ? `：${error.slice(0, 80)}` : ""}`);
+      throw new Error(I18n.language === "en" ? `Request failed (${response.status})${error ? `: ${error.slice(0, 80)}` : ""}` : `请求失败（${response.status}）${error ? `：${error.slice(0, 80)}` : ""}`);
     }
     const data = await response.json();
     usageRecorded = true;
     await reportModelUsage(usageFeature, data.usage, true);
     const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("模型没有返回分类结果");
+    if (!content) throw new Error(I18n.language === "en" ? "The model returned no classification" : "模型没有返回分类结果");
     const result = parseJson(content);
     const category = categories.includes(result.category) ? result.category : "稍后阅读";
     state.currentCategory = category;
@@ -332,14 +348,14 @@ async function classifyWithAI(usageFeature = "classification") {
     state.currentSummary = String(result.summary || "").trim();
     els.category.value = category;
     showAiResult();
-    showToast("AI 分类完成");
+    showToast(I18n.language === "en" ? "AI classification complete" : "AI 分类完成");
   } catch (error) {
     if (requestStarted && !usageRecorded) await reportModelUsage(usageFeature, null, false);
-    showToast(error.message || "分类失败，请检查模型配置");
+    showToast(error.message || (I18n.language === "en" ? "Classification failed; check the model settings" : "分类失败，请检查模型配置"));
   } finally {
     els.ai.disabled = false;
     els.summaryBtn.disabled = false;
-    els.ai.querySelector("span").textContent = "AI 智能分类";
+    els.ai.querySelector("span").textContent = t("AI 智能分类");
   }
 }
 
@@ -356,20 +372,20 @@ function showAiResult() {
 
 async function generateSummary() {
   if (!state.settings.apiUrl || !state.settings.apiKey || !state.settings.model) {
-    showToast("请先配置模型 URL、Key 和模型名");
+    showToast(I18n.language === "en" ? "Configure the model URL, key, and model name first" : "请先配置模型 URL、Key 和模型名");
     chrome.runtime.openOptionsPage();
     return;
   }
-  if (!syncCurrentUrlFromForm()) return showToast("请输入有效的 HTTP 或 HTTPS 网址");
+  if (!syncCurrentUrlFromForm()) return showToast(I18n.language === "en" ? "Enter a valid HTTP or HTTPS URL" : "请输入有效的 HTTP 或 HTTPS 网址");
   els.summaryBtn.disabled = true;
   els.ai.disabled = true;
-  els.summaryBtn.querySelector("span").textContent = "正在读取…";
+  els.summaryBtn.querySelector("span").textContent = t("正在读取…");
   let usageRecorded = false;
   let requestStarted = false;
   try {
     const pageContent = await extractPageContent();
-    if (!pageContent) throw new Error("未能读取当前页面正文");
-    els.summaryBtn.querySelector("span").textContent = "正在总结…";
+    if (!pageContent) throw new Error(I18n.language === "en" ? "Could not read the current page" : "未能读取当前页面正文");
+    els.summaryBtn.querySelector("span").textContent = t("正在总结…");
     requestStarted = true;
     const response = await fetch(normalizeEndpoint(state.settings.apiUrl), {
       method: "POST",
@@ -378,32 +394,32 @@ async function generateSummary() {
         model: state.settings.model,
         temperature: 0.2,
         messages: [
-          { role: "system", content: "你是网页内容摘要助手。请用简洁、准确的中文写一段60-120字摘要，包含网页的核心主题、主要信息和用途。不要添加标题、Markdown或网页中没有的信息，只返回摘要正文。" },
-          { role: "user", content: `网页标题：${els.title.value}\n网页地址：${state.currentUrl}\n网页正文：\n${pageContent}` }
+          { role: "system", content: I18n.language === "en" ? "Write a concise, accurate 40-90 word English summary covering the page's core topic, key information, and intended use. Do not add a title, Markdown, or unsupported facts. Return only the summary." : "你是网页内容摘要助手。请用简洁、准确的中文写一段60-120字摘要，包含网页的核心主题、主要信息和用途。不要添加标题、Markdown或网页中没有的信息，只返回摘要正文。" },
+          { role: "user", content: I18n.language === "en" ? `Page title: ${els.title.value}\nURL: ${state.currentUrl}\nPage content:\n${pageContent}` : `网页标题：${els.title.value}\n网页地址：${state.currentUrl}\n网页正文：\n${pageContent}` }
         ]
       })
     });
     if (!response.ok) {
       usageRecorded = true;
       await reportModelUsage("summary", null, false);
-      throw new Error(`摘要请求失败（${response.status}）`);
+      throw new Error(I18n.language === "en" ? `Summary request failed (${response.status})` : `摘要请求失败（${response.status}）`);
     }
     const data = await response.json();
     usageRecorded = true;
     await reportModelUsage("summary", data.usage, true);
     const summary = String(data.choices?.[0]?.message?.content || "")
       .replace(/^```(?:text)?/i, "").replace(/```$/i, "").replace(/^摘要[：:]\s*/, "").trim();
-    if (!summary) throw new Error("模型没有返回摘要");
+    if (!summary) throw new Error(I18n.language === "en" ? "The model returned no summary" : "模型没有返回摘要");
     state.currentSummary = summary;
     els.summary.value = state.currentSummary;
-    showToast("内容摘要已生成");
+    showToast(I18n.language === "en" ? "Summary generated" : "内容摘要已生成");
   } catch (error) {
     if (requestStarted && !usageRecorded) await reportModelUsage("summary", null, false);
-    showToast(error.message || "摘要生成失败");
+    showToast(error.message || (I18n.language === "en" ? "Summary generation failed" : "摘要生成失败"));
   } finally {
     els.summaryBtn.disabled = false;
     els.ai.disabled = false;
-    els.summaryBtn.querySelector("span").textContent = "生成摘要";
+    els.summaryBtn.querySelector("span").textContent = t("生成摘要");
   }
 }
 
@@ -440,7 +456,7 @@ function syncCurrentUrlFromForm() {
 
 async function saveBookmark() {
   const title = els.title.value.trim();
-  if (!title || !syncCurrentUrlFromForm()) return showToast("请填写有效的标题和网址");
+  if (!title || !syncCurrentUrlFromForm()) return showToast(I18n.language === "en" ? "Enter a valid title and URL" : "请填写有效的标题和网址");
   const existing = state.editingBookmarkId
     ? state.bookmarks.find(item => item.id === state.editingBookmarkId)
     : null;
@@ -450,7 +466,7 @@ async function saveBookmark() {
   const modelReady = state.settings.apiUrl && state.settings.apiKey && state.settings.model;
   if (!state.editingBookmarkId && autoClassify && modelReady && !els.summary.value.trim()) {
     els.save.disabled = true;
-    els.save.textContent = "正在智能整理…";
+    els.save.textContent = I18n.language === "en" ? "Organizing…" : "正在智能整理…";
     await classifyWithAI("auto_classification");
     els.save.disabled = false;
   }
@@ -466,10 +482,10 @@ async function saveBookmark() {
     ? state.bookmarks.map(item => item.id === existing.id ? bookmark : item)
     : [bookmark, ...state.bookmarks];
   await chrome.storage.local.set({ bookmarks: state.bookmarks });
-  els.save.textContent = "已收藏 ✓";
-  setTimeout(() => { els.save.textContent = "更新这个收藏"; }, 1200);
+  els.save.textContent = t("已收藏 ✓");
+  setTimeout(() => { els.save.textContent = t("更新这个收藏"); }, 1200);
   render();
-  showToast(existing ? "收藏信息已更新" : "收藏成功");
+  showToast(existing ? (I18n.language === "en" ? "Bookmark updated" : "收藏信息已更新") : (I18n.language === "en" ? "Bookmark saved" : "收藏成功"));
   setTimeout(closeCaptureModal, 520);
 }
 
@@ -481,13 +497,13 @@ async function deleteBookmark(id) {
   state.recycleBin.unshift(trashEntry);
   await chrome.storage.local.set({ bookmarks: state.bookmarks, recycleBin: state.recycleBin });
   render();
-  showToast("已移至回收站", "撤销", () => restoreTrashItem(trashEntry.id));
+  showToast(I18n.language === "en" ? "Moved to trash" : "已移至回收站", t("撤销"), () => restoreTrashItem(trashEntry.id));
 }
 
 function showDuplicateDialog(duplicate, editingExisting) {
   state.pendingDuplicate = { duplicate, editingExisting, draft: collectBookmarkDraft(editingExisting) };
   els.duplicateName.textContent = duplicate.title || duplicate.url;
-  els.duplicateMeta.textContent = `${duplicate.category || "未分类"} · ${duplicate.url}`;
+  els.duplicateMeta.textContent = `${categoryLabel(duplicate.category || "未分类")} · ${duplicate.url}`;
   els.duplicateModal.classList.remove("hidden");
 }
 
@@ -521,7 +537,7 @@ async function mergeDuplicateBookmark() {
   closeDuplicateDialog();
   closeCaptureModal();
   render();
-  showToast("重复收藏已合并");
+  showToast(I18n.language === "en" ? "Duplicate bookmarks merged" : "重复收藏已合并");
 }
 
 function closeDuplicateDialog() {
@@ -531,23 +547,23 @@ function closeDuplicateDialog() {
 
 async function restoreTrashItem(trashId) {
   const entry = state.recycleBin.find(item => item.id === trashId);
-  if (!entry) return showToast("这条收藏已不在回收站");
+  if (!entry) return showToast(I18n.language === "en" ? "This bookmark is no longer in trash" : "这条收藏已不在回收站");
   const collision = state.bookmarks.find(item => canonicalUrl(item.url) === canonicalUrl(entry.bookmark.url));
-  if (collision) return showToast("相同网址已存在，请先处理重复收藏");
+  if (collision) return showToast(I18n.language === "en" ? "The same URL already exists; resolve the duplicate first" : "相同网址已存在，请先处理重复收藏");
   state.recycleBin = state.recycleBin.filter(item => item.id !== trashId);
   const restoredId = state.bookmarks.some(item => item.id === entry.bookmark.id) ? crypto.randomUUID() : entry.bookmark.id;
   state.bookmarks.unshift({ ...entry.bookmark, id: restoredId, updatedAt: new Date().toISOString() });
   await chrome.storage.local.set({ bookmarks: state.bookmarks, recycleBin: state.recycleBin });
   render();
-  showToast("收藏已恢复");
+  showToast(I18n.language === "en" ? "Bookmark restored" : "收藏已恢复");
 }
 
 async function permanentlyDeleteTrashItem(trashId) {
-  if (!confirm("确定彻底删除这条收藏吗？此操作无法撤销。")) return;
+  if (!confirm(I18n.language === "en" ? "Delete this bookmark permanently? This cannot be undone." : "确定彻底删除这条收藏吗？此操作无法撤销。")) return;
   state.recycleBin = state.recycleBin.filter(item => item.id !== trashId);
   await chrome.storage.local.set({ recycleBin: state.recycleBin });
   render();
-  showToast("已彻底删除");
+  showToast(I18n.language === "en" ? "Permanently deleted" : "已彻底删除");
 }
 
 async function retryAiProcessing(bookmarkId) {
@@ -557,12 +573,12 @@ async function retryAiProcessing(bookmarkId) {
   bookmark.aiError = "";
   await chrome.storage.local.set({ bookmarks: state.bookmarks });
   render();
-  showToast("已加入 AI 整理队列");
+  showToast(I18n.language === "en" ? "Added to the AI processing queue" : "已加入 AI 整理队列");
   try {
     const response = await chrome.runtime.sendMessage({ type: "retry-ai-bookmark", bookmarkId });
     if (response?.error) showToast(response.error);
   } catch {
-    showToast("无法启动 AI 整理任务");
+    showToast(I18n.language === "en" ? "Could not start AI processing" : "无法启动 AI 整理任务");
   }
 }
 
@@ -635,23 +651,23 @@ function commonSiteScore(item) {
 
 function formatDuration(milliseconds) {
   const minutes = Math.max(1, Math.round(milliseconds / 60_000));
-  if (minutes < 60) return `${minutes} 分钟`;
+  if (minutes < 60) return I18n.language === "en" ? `${minutes} min` : `${minutes} 分钟`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+  return I18n.language === "en" ? (rest ? `${hours} hr ${rest} min` : `${hours} hr`) : (rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`);
 }
 
 function relativeTime(timestamp) {
-  if (!timestamp) return "未知";
+  if (!timestamp) return I18n.language === "en" ? "unknown" : "未知";
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return "刚刚";
+  if (seconds < 60) return I18n.language === "en" ? "just now" : "刚刚";
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return I18n.language === "en" ? `${minutes} min ago` : `${minutes} 分钟前`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return I18n.language === "en" ? `${hours} hr ago` : `${hours} 小时前`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} 天前`;
-  return new Date(timestamp).toLocaleDateString("zh-CN");
+  if (days < 30) return I18n.language === "en" ? `${days} days ago` : `${days} 天前`;
+  return new Date(timestamp).toLocaleDateString(locale());
 }
 
 function getCategoryTone(category) {
@@ -715,7 +731,7 @@ function editDistance(a, b) {
 }
 
 function showToast(message, actionLabel = "", action = null) {
-  els.toastMessage.textContent = message;
+  els.toastMessage.textContent = t(message);
   state.undoAction = action;
   els.toastAction.textContent = actionLabel;
   els.toastAction.classList.toggle("hidden", !actionLabel || !action);
@@ -739,20 +755,20 @@ async function openCaptureModal() {
 
 function openEditModal(bookmarkId) {
   const bookmark = state.bookmarks.find(item => item.id === bookmarkId);
-  if (!bookmark) return showToast("未找到这条收藏");
+  if (!bookmark) return showToast(I18n.language === "en" ? "Bookmark not found" : "未找到这条收藏");
   resetCaptureForm();
   state.editingBookmarkId = bookmark.id;
   state.currentUrl = bookmark.url;
   state.currentTags = [...(bookmark.tags || [])];
   state.currentSummary = bookmark.summary || "";
-  els.captureEyebrow.textContent = "编辑收藏";
-  els.captureTitle.textContent = "修改收藏信息";
+  els.captureEyebrow.textContent = t("编辑收藏");
+  els.captureTitle.textContent = t("修改收藏信息");
   els.title.value = bookmark.title || bookmark.url;
   els.url.value = bookmark.url;
   els.category.value = bookmark.category || "稍后阅读";
   els.summary.value = state.currentSummary;
   els.tags.value = state.currentTags.join("，");
-  els.save.textContent = "保存修改";
+  els.save.textContent = t("保存修改");
   showAiResult();
   applyPopupHeight(Math.max(state.layoutHeight, 575));
   els.modal.classList.remove("hidden");
@@ -823,8 +839,8 @@ async function resolveNativeDeletion(deleteFromPlugin) {
   const remaining = state.pendingNativeDeletions.length;
   await chrome.action.setBadgeText({ text: remaining ? (remaining > 9 ? "9+" : String(remaining)) : "" });
   render();
-  if (deleteFromPlugin && deletedTrashId) showToast("已同时移至拾页回收站", "撤销", () => restoreTrashItem(deletedTrashId));
-  else showToast("已在拾页保留");
+  if (deleteFromPlugin && deletedTrashId) showToast(I18n.language === "en" ? "Also moved to ShiYe trash" : "已同时移至拾页回收站", t("撤销"), () => restoreTrashItem(deletedTrashId));
+  else showToast(I18n.language === "en" ? "Kept in ShiYe" : "已在拾页保留");
   if (remaining) showNextNativeDeletion();
   else {
     els.nativeDeleteModal.classList.add("hidden");

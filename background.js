@@ -9,6 +9,21 @@ const MAX_SESSION_MS = 4 * 60 * 60 * 1_000;
 let bookmarkSyncQueue = Promise.resolve();
 let modelUsageQueue = Promise.resolve();
 
+function useEnglish(settings = {}) {
+  if (settings.language === "en") return true;
+  if (settings.language === "zh-CN") return false;
+  return chrome.i18n.getUILanguage().toLowerCase().startsWith("en");
+}
+
+function contextMenuTitle(settings = {}) {
+  return useEnglish(settings) ? "Save to ShiYe" : "收藏到「拾页」";
+}
+
+async function syncContextMenuLanguage(settings) {
+  if (!settings) settings = (await chrome.storage.local.get("settings")).settings || {};
+  try { await chrome.contextMenus.update("save-to-shiye", { title: contextMenuTitle(settings) }); } catch {}
+}
+
 function enqueueBookmarkSync(task) {
   bookmarkSyncQueue = bookmarkSyncQueue.then(task, task).catch(() => {});
   return bookmarkSyncQueue;
@@ -133,13 +148,14 @@ async function extractOpenPageContent(url) {
 }
 
 async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
+  const english = useEnglish(settings);
   if ((!force && settings?.autoClassifyOnSave === false) || !settings?.apiUrl || !settings?.apiKey || !settings?.model) {
-    await updateBookmarkAiState(pluginBookmarkId, "idle", !force && settings?.autoClassifyOnSave === false ? "自动整理已关闭" : "请先配置模型");
-    return { success: false, error: "模型未配置或自动整理已关闭" };
+    await updateBookmarkAiState(pluginBookmarkId, "idle", english ? (!force && settings?.autoClassifyOnSave === false ? "Automatic processing is disabled" : "Configure a model first") : (!force && settings?.autoClassifyOnSave === false ? "自动整理已关闭" : "请先配置模型"));
+    return { success: false, error: english ? "Model not configured or automatic processing disabled" : "模型未配置或自动整理已关闭" };
   }
   const data = await chrome.storage.local.get("bookmarks");
   const bookmark = (data.bookmarks || []).find(item => item.id === pluginBookmarkId);
-  if (!bookmark) return { success: false, error: "收藏不存在" };
+  if (!bookmark) return { success: false, error: english ? "Bookmark not found" : "收藏不存在" };
   await updateBookmarkAiState(pluginBookmarkId, "processing", "");
   let usageRecorded = false;
   try {
@@ -152,15 +168,17 @@ async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
         model: settings.model,
         temperature: 0.2,
         messages: [
-          { role: "system", content: `你是网址收藏整理助手。请从候选分类中选择一项，并生成2-4个简短中文标签和60-120字中文摘要。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
-          { role: "user", content: `标题：${bookmark.title}\n网址：${bookmark.url}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
+          { role: "system", content: english
+            ? `You organize web bookmarks. Select exactly one category identifier from the candidates and generate 2-4 short English tags and a concise 40-90 word English summary. Return JSON only: {"category":"exact identifier","tags":["tag"],"summary":"summary"}. Candidates: ${categories.join(", ")}`
+            : `你是网址收藏整理助手。请从候选分类中选择一项，并生成2-4个简短中文标签和60-120字中文摘要。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
+          { role: "user", content: english ? `Title: ${bookmark.title}\nURL: ${bookmark.url}\nPage content:\n${pageContent || "Page content is unavailable. Infer from the title and URL."}` : `标题：${bookmark.title}\n网址：${bookmark.url}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
         ]
       })
     });
     if (!response.ok) {
       usageRecorded = true;
       await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false });
-      const message = `模型请求失败（${response.status}）`;
+      const message = english ? `Model request failed (${response.status})` : `模型请求失败（${response.status}）`;
       await updateBookmarkAiState(pluginBookmarkId, "failed", message, true);
       return { success: false, error: message };
     }
@@ -168,7 +186,7 @@ async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
     usageRecorded = true;
     await recordModelUsage({ feature: "auto_classification", model: settings.model, success: true, usage: payload.usage });
     const result = parseModelJson(payload.choices?.[0]?.message?.content);
-    if (!result) throw new Error("模型返回内容无法识别");
+    if (!result) throw new Error(english ? "Could not parse the model response" : "模型返回内容无法识别");
 
     const latest = await chrome.storage.local.get("bookmarks");
     const bookmarks = latest.bookmarks || [];
@@ -186,7 +204,7 @@ async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
     return { success: true };
   } catch (error) {
     if (!usageRecorded) await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false });
-    const message = String(error?.message || "AI 整理失败").slice(0, 160);
+    const message = String(error?.message || (english ? "AI processing failed" : "AI 整理失败")).slice(0, 160);
     await updateBookmarkAiState(pluginBookmarkId, "failed", message, true);
     return { success: false, error: message };
   }
@@ -377,11 +395,9 @@ async function startFocusedTab() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "save-to-shiye",
-    title: "收藏到「拾页」",
-    contexts: ["page", "link"]
-  });
+  chrome.storage.local.get("settings").then(data => chrome.contextMenus.create({
+    id: "save-to-shiye", title: contextMenuTitle(data.settings || {}), contexts: ["page", "link"]
+  }));
   startFocusedTab();
   purgeRecycleBin().catch(() => {});
 });
@@ -390,6 +406,11 @@ chrome.runtime.onStartup.addListener(() => {
   startFocusedTab();
   refreshPendingDeletionBadge();
   purgeRecycleBin().catch(() => {});
+  syncContextMenuLanguage().catch(() => {});
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.settings) syncContextMenuLanguage(changes.settings.newValue || {}).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

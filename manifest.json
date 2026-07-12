@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "拾页 · AI 智能书签",
-  "version": "1.0.0",
-  "description": "本地优先的 AI 智能书签管理器：自动分类、摘要、标签与搜索，并与 Chrome 原生书签联动。",
+  "name": "__MSG_extensionName__",
+  "version": "1.1.0",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "zh_CN",
   "permissions": ["storage", "tabs", "activeTab", "contextMenus", "scripting", "history", "idle", "bookmarks", "alarms"],
   "host_permissions": ["<all_urls>"],
   "icons": {
@@ -12,7 +13,7 @@
     "128": "icons/logo-128.png"
   },
   "action": {
-    "default_title": "拾页",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/logo-16.png",
