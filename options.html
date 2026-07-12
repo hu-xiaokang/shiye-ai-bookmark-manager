@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拾页设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <aside>
+        <div class="brand"><img class="mark" src="assets/shiye-logo.svg" alt="拾页" /><div><strong>拾页</strong><span>AI 智能书签</span></div></div>
+        <nav><a class="active" href="#model">模型配置</a><a href="#behavior">默认行为</a><a href="#usage">用量统计</a><a href="#categories">分类管理</a><a href="#data">数据管理</a></nav>
+        <p class="aside-note">所有配置与收藏仅保存在本机浏览器中。</p>
+      </aside>
+      <section class="content">
+        <header><span>设置</span><h1>让拾页更懂你</h1><p>连接你信任的大模型，用它自动整理每一个收藏。</p></header>
+
+        <article id="model" class="card">
+          <div class="card-title"><div class="icon">✦</div><div><h2>大模型配置</h2><p>支持 OpenAI Chat Completions 兼容接口</p></div></div>
+          <div class="grid">
+            <label class="wide"><span>API URL</span><input id="apiUrl" type="url" placeholder="https://api.openai.com/v1" /><small>可填写服务根地址、/v1 地址或完整的 /chat/completions 地址</small></label>
+            <label><span>API Key</span><div class="secret"><input id="apiKey" type="password" placeholder="sk-..." /><button id="toggleKey" type="button">显示</button></div></label>
+            <label><span>模型名称</span><input id="modelName" type="text" placeholder="gpt-4o-mini" /></label>
+          </div>
+          <div class="actions"><button id="testBtn" class="secondary">测试连接</button><button id="saveBtn" class="primary">保存配置</button></div>
+          <div id="testResult" class="result hidden"></div>
+        </article>
+
+        <article id="behavior" class="card">
+          <div class="card-title"><div class="icon behavior-icon">✓</div><div><h2>默认行为</h2><p>控制收藏与浏览器原生书签联动方式</p></div></div>
+          <div class="behavior-list">
+            <label class="behavior-row">
+              <div><strong>自动智能分类和摘要</strong><span>收藏新网址时，自动调用已配置模型完成分类、标签和内容摘要</span></div>
+              <span class="toggle"><input id="autoClassifyOnSave" type="checkbox" /><i></i></span>
+            </label>
+            <label class="behavior-row">
+              <div><strong>原生书签删除时自动删除</strong><span>从 Chrome 书签删除后，同时删除对应的拾页收藏；关闭后改为弹窗确认</span></div>
+              <span class="toggle"><input id="autoDeleteWithNative" type="checkbox" /><i></i></span>
+            </label>
+          </div>
+          <div class="ai-queue-panel">
+            <div><strong>AI 整理队列</strong><span id="aiQueueSummary">正在统计待处理收藏…</span></div>
+            <button id="retryAllAiBtn" class="secondary">重新处理失败与缺失内容</button>
+          </div>
+        </article>
+
+        <article id="usage" class="card">
+          <div class="card-title usage-title">
+            <div class="icon usage-icon">◫</div>
+            <div><h2>模型用量统计</h2><p>统计所有手动与自动模型调用，仅保存在本机</p></div>
+            <button id="refreshUsageBtn" class="text-action">刷新</button>
+          </div>
+          <div class="usage-grid">
+            <div class="usage-stat"><span>请求次数</span><strong id="usageRequests">0</strong></div>
+            <div class="usage-stat primary-stat"><span>总 Token</span><strong id="usageTotalTokens">0</strong></div>
+            <div class="usage-stat"><span>输入 Token</span><strong id="usageInputTokens">0</strong></div>
+            <div class="usage-stat"><span>输出 Token</span><strong id="usageOutputTokens">0</strong></div>
+          </div>
+          <div class="usage-meta">
+            <span>今日 <strong id="usageToday">0 Token</strong></span>
+            <span>成功/失败 <strong id="usageSuccess">0 / 0</strong></span>
+            <span>最后调用 <strong id="usageLastUsed">暂无</strong></span>
+          </div>
+          <div class="feature-usage">
+            <div class="feature-header"><span>按功能统计</span><span>请求 / Token</span></div>
+            <div id="usageFeatureList"></div>
+          </div>
+          <div class="usage-footer">
+            <small>部分兼容接口不返回 Token 用量，此时只统计请求次数。</small>
+            <button id="resetUsageBtn" class="reset-usage">清空统计</button>
+          </div>
+        </article>
+
+        <article id="categories" class="card">
+          <div class="card-title"><div class="icon warm">#</div><div><h2>分类管理</h2><p>AI 会从这些分类中选择最合适的一项</p></div></div>
+          <div id="categoryList" class="category-list"></div>
+          <div class="add-row"><input id="newCategory" type="text" maxlength="12" placeholder="新增一个分类" /><button id="addCategory">添加</button></div>
+        </article>
+
+        <article id="data" class="card">
+          <div class="card-title"><div class="icon green">↕</div><div><h2>数据管理</h2><p>备份或迁移你的收藏与设置</p></div></div>
+          <label class="safe-export-option"><span class="toggle"><input id="includeApiKey" type="checkbox" /><i></i></span><span><strong>备份中包含 API Key</strong><small>默认关闭。仅在备份文件由你安全保管时开启。</small></span></label>
+          <div class="data-actions"><button id="exportBtn" class="secondary">安全导出 JSON</button><label class="file-btn">选择备份文件<input id="importInput" type="file" accept="application/json" /></label><button id="restoreBackupBtn" class="secondary">恢复上次安全快照</button><button id="clearBtn" class="danger">清空收藏</button></div>
+          <div id="importPreview" class="import-preview hidden">
+            <div class="import-preview-head"><strong>导入预检</strong><button id="cancelImportBtn" type="button">×</button></div>
+            <div id="importPreviewStats" class="import-preview-stats"></div>
+            <p id="importPreviewNote"></p>
+            <div class="import-actions"><button id="mergeImportBtn" class="secondary">合并导入</button><button id="replaceImportBtn" class="primary">覆盖恢复</button></div>
+          </div>
+        </article>
+      </section>
+      <div id="toast" class="toast"></div>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

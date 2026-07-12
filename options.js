@@ -1,0 +1,378 @@
+const DEFAULT_CATEGORIES = ["稍后阅读", "工作效率", "技术开发", "设计灵感", "学习资料", "生活兴趣", "新闻资讯", "工具服务"];
+let settings = {};
+let usageStats = {};
+let bookmarksCache = [];
+let recycleBinCache = [];
+let pendingImport = null;
+const $ = id => document.getElementById(id);
+
+async function init() {
+  const data = await chrome.storage.local.get(["settings", "modelUsage", "bookmarks", "recycleBin", "lastSafetyBackup"]);
+  settings = sanitizeSettings(data.settings || {});
+  usageStats = data.modelUsage || {};
+  bookmarksCache = Array.isArray(data.bookmarks) ? data.bookmarks : [];
+  recycleBinCache = Array.isArray(data.recycleBin) ? data.recycleBin : [];
+  $("apiUrl").value = settings.apiUrl || "https://api.openai.com/v1";
+  $("apiKey").value = settings.apiKey || "";
+  $("modelName").value = settings.model || "gpt-4o-mini";
+  settings.categories = settings.categories || [...DEFAULT_CATEGORIES];
+  settings.autoClassifyOnSave = settings.autoClassifyOnSave ?? true;
+  settings.autoDeleteWithNative = settings.autoDeleteWithNative ?? true;
+  $("autoClassifyOnSave").checked = settings.autoClassifyOnSave;
+  $("autoDeleteWithNative").checked = settings.autoDeleteWithNative;
+  renderCategories();
+  renderUsage();
+  renderAiQueue();
+  $("restoreBackupBtn").disabled = !data.lastSafetyBackup;
+}
+
+function readForm() {
+  return {
+    ...sanitizeSettings(settings),
+    apiUrl: $("apiUrl").value.trim(), apiKey: $("apiKey").value.trim(), model: $("modelName").value.trim(),
+    categories: settings.categories,
+    autoClassifyOnSave: $("autoClassifyOnSave").checked,
+    autoDeleteWithNative: $("autoDeleteWithNative").checked
+  };
+}
+
+async function persistBehavior() {
+  settings = readForm();
+  await chrome.storage.local.set({ settings });
+  toast("默认行为已更新");
+}
+
+async function saveSettings() {
+  const next = readForm();
+  if (!next.apiUrl || !next.apiKey || !next.model) return toast("请完整填写模型配置");
+  settings = next;
+  await chrome.storage.local.set({ settings });
+  toast("配置已保存");
+}
+
+async function testConnection() {
+  const next = readForm();
+  const result = $("testResult");
+  result.className = "result";
+  result.textContent = "正在连接模型…";
+  $("testBtn").disabled = true;
+  let usageRecorded = false;
+  let requestStarted = false;
+  try {
+    if (!next.apiUrl || !next.apiKey || !next.model) throw new Error("请先完整填写模型配置");
+    requestStarted = true;
+    const response = await fetch(normalizeEndpoint(next.apiUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${next.apiKey}` },
+      body: JSON.stringify({ model: next.model, temperature: 0, max_tokens: 8, messages: [{ role: "user", content: "只回复：连接成功" }] })
+    });
+    if (!response.ok) {
+      usageRecorded = true;
+      await reportModelUsage("connection_test", null, false, next.model);
+      throw new Error(`连接失败（HTTP ${response.status}）`);
+    }
+    const data = await response.json();
+    usageRecorded = true;
+    await reportModelUsage("connection_test", data.usage, true, next.model);
+    if (!data.choices?.[0]) throw new Error("接口返回格式不兼容");
+    result.textContent = `连接成功，模型 ${next.model} 可以使用。`;
+  } catch (error) {
+    if (requestStarted && !usageRecorded) await reportModelUsage("connection_test", null, false, next.model);
+    result.classList.add("error");
+    result.textContent = error.message;
+  } finally { $("testBtn").disabled = false; }
+}
+
+function renderUsage() {
+  const stats = usageStats || {};
+  $("usageRequests").textContent = formatNumber(stats.requests || 0);
+  $("usageTotalTokens").textContent = formatNumber(stats.totalTokens || 0);
+  $("usageInputTokens").textContent = formatNumber(stats.inputTokens || 0);
+  $("usageOutputTokens").textContent = formatNumber(stats.outputTokens || 0);
+  const today = stats.daily?.[usageDateKey()] || {};
+  $("usageToday").textContent = `${formatNumber(today.totalTokens || 0)} Token`;
+  $("usageSuccess").textContent = `${formatNumber(stats.successful || 0)} / ${formatNumber(stats.failed || 0)}`;
+  $("usageLastUsed").textContent = stats.lastUsedAt ? new Date(stats.lastUsedAt).toLocaleString("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "暂无";
+  const features = [
+    ["auto_classification", "自动分类与摘要", "auto"],
+    ["classification", "手动 AI 分类", "classify"],
+    ["summary", "单独生成摘要", "summary"],
+    ["connection_test", "模型连接测试", "test"]
+  ];
+  $("usageFeatureList").innerHTML = features.map(([key, label, tone]) => {
+    const value = stats.byFeature?.[key] || {};
+    return `<div class="feature-row"><span><i class="feature-dot ${tone}"></i>${label}</span><strong>${formatNumber(value.requests || 0)} / ${formatNumber(value.totalTokens || 0)}</strong></div>`;
+  }).join("");
+}
+
+function usageDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+}
+
+function formatNumber(value) { return Number(value || 0).toLocaleString("zh-CN"); }
+
+async function reportModelUsage(feature, usage, success, model) {
+  try {
+    await chrome.runtime.sendMessage({ type:"record-model-usage", payload:{ feature, usage, success, model } });
+  } catch {}
+}
+
+async function refreshUsage() {
+  const data = await chrome.storage.local.get("modelUsage");
+  usageStats = data.modelUsage || {};
+  renderUsage();
+}
+
+async function resetUsage() {
+  if (!confirm("确定清空全部模型用量统计吗？此操作无法撤销。")) return;
+  await chrome.storage.local.remove("modelUsage");
+  usageStats = {};
+  renderUsage();
+  toast("模型用量统计已清空");
+}
+
+function renderCategories() {
+  $("categoryList").innerHTML = settings.categories.map((category, index) => `<span class="category-chip">${escapeHtml(category)}<button data-index="${index}" title="删除">×</button></span>`).join("");
+}
+
+function renderAiQueue() {
+  const failed = bookmarksCache.filter(item => item.aiStatus === "failed").length;
+  const pending = bookmarksCache.filter(item => item.aiStatus === "pending" || item.aiStatus === "processing").length;
+  const incomplete = bookmarksCache.filter(item => !item.summary).length;
+  $("aiQueueSummary").textContent = `失败 ${failed} · 处理中/等待 ${pending} · 缺少摘要 ${incomplete}`;
+  $("retryAllAiBtn").disabled = !bookmarksCache.some(item => item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary);
+}
+
+async function retryAllAi() {
+  if (!settings.apiUrl || !settings.apiKey || !settings.model) return toast("请先完成模型配置");
+  const button = $("retryAllAiBtn");
+  button.disabled = true;
+  button.textContent = "正在批量处理…";
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "retry-all-ai" });
+    if (!result?.success) throw new Error(result?.error || "批量处理失败");
+    toast(`处理完成：${result.completed}/${result.total}`);
+  } catch (error) {
+    toast(error.message || "批量处理失败");
+  } finally {
+    button.textContent = "重新处理失败与缺失内容";
+    const data = await chrome.storage.local.get("bookmarks");
+    bookmarksCache = data.bookmarks || [];
+    renderAiQueue();
+  }
+}
+
+async function persistCategories() { await chrome.storage.local.set({ settings: readForm() }); }
+
+async function addCategory() {
+  const input = $("newCategory");
+  const value = input.value.trim();
+  if (!value) return;
+  if (settings.categories.includes(value)) return toast("这个分类已经存在");
+  settings.categories.push(value); input.value = ""; renderCategories(); await persistCategories();
+}
+
+async function removeCategory(index) {
+  if (settings.categories.length <= 1) return toast("至少保留一个分类");
+  const category = settings.categories[index];
+  const affected = bookmarksCache.filter(item => item.category === category);
+  const affectedTrash = recycleBinCache.filter(item => item.bookmark?.category === category);
+  let target = "";
+  if (affected.length || affectedTrash.length) {
+    const available = settings.categories.filter((_, itemIndex) => itemIndex !== index);
+    target = prompt(`“${category}”中有 ${affected.length} 个收藏，回收站中有 ${affectedTrash.length} 个。请输入迁移目标分类：\n${available.join("、")}`, available[0] || "稍后阅读");
+    if (target === null) return;
+    target = target.trim();
+    if (!available.includes(target)) return toast("请输入现有的目标分类");
+  }
+  await createSafetySnapshot("delete-category");
+  settings.categories.splice(index, 1);
+  if (target) bookmarksCache = bookmarksCache.map(item => item.category === category ? { ...item, category: target, updatedAt: new Date().toISOString() } : item);
+  if (target) recycleBinCache = recycleBinCache.map(item => item.bookmark?.category === category ? { ...item, bookmark: { ...item.bookmark, category: target, updatedAt: new Date().toISOString() } } : item);
+  await chrome.storage.local.set({ settings: readForm(), bookmarks: bookmarksCache, recycleBin: recycleBinCache });
+  renderCategories();
+  const migrated = affected.length + affectedTrash.length;
+  toast(migrated ? `分类已删除，${migrated} 个收藏已迁移` : "分类已删除");
+}
+
+async function exportData() {
+  const data = await chrome.storage.local.get(["bookmarks", "settings", "modelUsage", "recycleBin"]);
+  const exportedSettings = { ...(data.settings || {}) };
+  const includeApiKey = $("includeApiKey").checked;
+  if (!includeApiKey) delete exportedSettings.apiKey;
+  const payload = {
+    format: "shiye-backup", version: 2, exportedAt: new Date().toISOString(),
+    security: { includesApiKey: includeApiKey },
+    bookmarks: data.bookmarks || [], recycleBin: data.recycleBin || [], settings: exportedSettings,
+    modelUsage: data.modelUsage || {}
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = `拾页备份-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
+  toast(includeApiKey ? "备份已导出，请安全保管其中的 API Key" : "安全备份已导出（不含 API Key）");
+}
+
+async function importData(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.bookmarks)) throw new Error("备份文件格式不正确");
+    if (data.version && Number(data.version) > 2) throw new Error("备份版本高于当前插件，请升级后再导入");
+    const localByUrl = new Map(bookmarksCache.map(item => [canonicalUrl(item.url), item]));
+    const duplicates = data.bookmarks.filter(item => localByUrl.has(canonicalUrl(item.url))).length;
+    pendingImport = { data, duplicates, fileName: file.name };
+    $("importPreviewStats").innerHTML = `<span><strong>${data.bookmarks.length}</strong> 个收藏</span><span><strong>${duplicates}</strong> 个重复</span><span><strong>${(data.recycleBin || []).length}</strong> 个回收站项目</span>`;
+    $("importPreviewNote").textContent = data.security?.includesApiKey || data.settings?.apiKey
+      ? "此备份包含 API Key。导入后会保存到当前浏览器。"
+      : "此备份不包含 API Key，将保留当前浏览器中的模型密钥。";
+    $("importPreview").classList.remove("hidden");
+  } catch (error) { toast(error.message || "导入失败"); }
+}
+
+async function applyImport(mode) {
+  if (!pendingImport) return;
+  const { data, duplicates } = pendingImport;
+  await createSafetySnapshot(`before-import-${mode}`);
+  let nextBookmarks;
+  if (mode === "replace") {
+    nextBookmarks = deduplicateBookmarks(data.bookmarks);
+  } else {
+    const merged = new Map(bookmarksCache.map(item => [canonicalUrl(item.url), item]));
+    for (const imported of data.bookmarks) {
+      if (!imported?.url) continue;
+      const key = canonicalUrl(imported.url);
+      const local = merged.get(key);
+      merged.set(key, local ? mergeBookmarkRecords(local, imported) : imported);
+    }
+    nextBookmarks = [...merged.values()];
+  }
+  const importedSettings = sanitizeSettings(data.settings && typeof data.settings === "object" ? data.settings : {});
+  const nextSettings = { ...settings, ...importedSettings, apiKey: importedSettings.apiKey || settings.apiKey || "" };
+  const updates = {
+    bookmarks: nextBookmarks,
+    settings: nextSettings,
+    recycleBin: mode === "replace" ? (data.recycleBin || []) : [...recycleBinCache, ...(data.recycleBin || [])],
+    ...(data.modelUsage ? { modelUsage: data.modelUsage } : {})
+  };
+  await chrome.storage.local.set(updates);
+  closeImportPreview();
+  toast(mode === "replace" ? `已恢复 ${nextBookmarks.length} 个收藏` : `已合并导入，处理 ${duplicates} 个重复网址`);
+  await init();
+}
+
+function closeImportPreview() {
+  pendingImport = null;
+  $("importPreview").classList.add("hidden");
+  $("importInput").value = "";
+}
+
+function canonicalUrl(value = "") {
+  try {
+    const url = new URL(value);
+    url.protocol = "https:";
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+    url.port = "";
+    url.hash = "";
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    const tracking = /^(utm_[a-z]+|fbclid|gclid|yclid|mc_[a-z]+|ref|referrer|source)$/i;
+    [...url.searchParams.keys()].forEach(key => { if (tracking.test(key)) url.searchParams.delete(key); });
+    url.searchParams.sort();
+    return url.toString();
+  } catch { return String(value).replace(/#.*$/, "").replace(/\/+$/, ""); }
+}
+
+function sanitizeSettings(value = {}) {
+  const next = { ...value };
+  delete next.enableAds;
+  delete next.adFeedUrl;
+  return next;
+}
+
+function mergeBookmarkRecords(local, imported) {
+  return {
+    ...imported, ...local,
+    summary: (local.summary || "").length >= (imported.summary || "").length ? local.summary : imported.summary,
+    tags: [...new Set([...(local.tags || []), ...(imported.tags || [])])].slice(0, 8),
+    nativeBookmarkIds: [...new Set([...(local.nativeBookmarkIds || []), ...(imported.nativeBookmarkIds || [])])],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function deduplicateBookmarks(items) {
+  const map = new Map();
+  for (const item of items) {
+    if (!item?.url) continue;
+    const key = canonicalUrl(item.url);
+    map.set(key, map.has(key) ? mergeBookmarkRecords(map.get(key), item) : item);
+  }
+  return [...map.values()];
+}
+
+async function createSafetySnapshot(reason) {
+  const data = await chrome.storage.local.get(["bookmarks", "settings", "modelUsage", "recycleBin"]);
+  await chrome.storage.local.set({ lastSafetyBackup: { version: 2, reason, createdAt: new Date().toISOString(), ...data } });
+}
+
+async function restoreSafetySnapshot() {
+  const data = await chrome.storage.local.get(["lastSafetyBackup", "bookmarks", "settings", "recycleBin", "modelUsage"]);
+  const snapshot = data.lastSafetyBackup;
+  if (!snapshot?.bookmarks) return toast("暂无可恢复的安全快照");
+  if (!confirm(`确定恢复 ${new Date(snapshot.createdAt).toLocaleString("zh-CN")} 的安全快照吗？`)) return;
+  await chrome.storage.local.set({
+    bookmarks: snapshot.bookmarks || [], settings: snapshot.settings || settings,
+    recycleBin: snapshot.recycleBin || [], modelUsage: snapshot.modelUsage || {},
+    lastSafetyBackup: {
+      version: 2, reason: "before-restore", createdAt: new Date().toISOString(),
+      bookmarks: data.bookmarks || [], settings: data.settings || settings, recycleBin: data.recycleBin || [],
+      modelUsage: data.modelUsage || {}
+    }
+  });
+  toast("安全快照已恢复");
+  await init();
+}
+
+async function clearBookmarksSafely() {
+  if (!confirm("确定将所有收藏移入回收站吗？30 天内可以恢复。")) return;
+  await createSafetySnapshot("clear-bookmarks");
+  const now = Date.now();
+  const recycleBin = [...bookmarksCache.map(bookmark => ({ id: crypto.randomUUID(), bookmark, deletedAt: now, reason: "clear-all" })), ...recycleBinCache];
+  await chrome.storage.local.set({ bookmarks: [], recycleBin });
+  bookmarksCache = [];
+  recycleBinCache = recycleBin;
+  renderAiQueue();
+  toast("所有收藏已移入回收站");
+}
+
+function normalizeEndpoint(url) { const clean = url.trim().replace(/\/$/, ""); if (/\/chat\/completions$/i.test(clean)) return clean; return /\/v1$/i.test(clean) ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`; }
+function escapeHtml(value="") { return String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function toast(message) { const el=$("toast"); el.textContent=message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove("show"),2200); }
+
+$("toggleKey").addEventListener("click", () => { const input=$("apiKey"); input.type=input.type==="password"?"text":"password"; $("toggleKey").textContent=input.type==="password"?"显示":"隐藏"; });
+$("saveBtn").addEventListener("click", saveSettings);
+$("testBtn").addEventListener("click", testConnection);
+$("autoClassifyOnSave").addEventListener("change", persistBehavior);
+$("autoDeleteWithNative").addEventListener("change", persistBehavior);
+$("refreshUsageBtn").addEventListener("click", refreshUsage);
+$("resetUsageBtn").addEventListener("click", resetUsage);
+$("retryAllAiBtn").addEventListener("click", retryAllAi);
+$("addCategory").addEventListener("click", addCategory);
+$("newCategory").addEventListener("keydown", e => { if(e.key==="Enter") addCategory(); });
+$("categoryList").addEventListener("click", e => { const button=e.target.closest("button[data-index]"); if(button) removeCategory(Number(button.dataset.index)); });
+$("exportBtn").addEventListener("click", exportData);
+$("importInput").addEventListener("change", e => { if(e.target.files[0]) importData(e.target.files[0]); });
+$("cancelImportBtn").addEventListener("click", closeImportPreview);
+$("mergeImportBtn").addEventListener("click", () => applyImport("merge"));
+$("replaceImportBtn").addEventListener("click", () => applyImport("replace"));
+$("restoreBackupBtn").addEventListener("click", restoreSafetySnapshot);
+$("clearBtn").addEventListener("click", clearBookmarksSafely);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.modelUsage) {
+    usageStats = changes.modelUsage.newValue || {};
+    renderUsage();
+  }
+  if (area === "local" && changes.bookmarks) {
+    bookmarksCache = Array.isArray(changes.bookmarks.newValue) ? changes.bookmarks.newValue : [];
+    renderAiQueue();
+  }
+  if (area === "local" && changes.recycleBin) recycleBinCache = Array.isArray(changes.recycleBin.newValue) ? changes.recycleBin.newValue : [];
+});
+init();

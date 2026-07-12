@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拾页</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="assets/shiye-logo.svg" alt="拾页" />
+          <div><h1>拾页</h1><p>AI 智能书签</p></div>
+        </div>
+        <div class="top-actions">
+          <button id="captureBtn" class="capture-btn">
+            <span>＋</span> 收藏当前页
+          </button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <nav id="filterBar" class="filter-bar" aria-label="网站导航"></nav>
+          <div class="sidebar-footer">
+            <button id="recycleBinBtn" class="sidebar-utility" title="查看最近 30 天删除的收藏">
+              <span class="utility-icon">♲</span><span>回收站</span><i id="recycleBinCount" class="hidden">0</i>
+            </button>
+            <button id="settingsBtn" class="sidebar-settings" title="模型、分类与数据设置">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V20.3h-3v-.08a1.7 1.7 0 0 0-1.03-1.56A1.7 1.7 0 0 0 8.8 19l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7.02 15a1.7 1.7 0 0 0-1.56-1.03H5.4v-3h.06a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0 1.03-1.56V4.7h3v.02a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 8l-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03h.04v3h-.04A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+              <span>设置</span>
+            </button>
+          </div>
+        </aside>
+
+        <section class="library">
+          <div class="library-head">
+            <div class="library-title-row">
+              <div class="section-title">
+                <h2 id="viewTitle">全部网站</h2>
+                <span id="countText">0 个收藏</span>
+              </div>
+              <span id="searchScope" class="search-scope hidden">全库搜索</span>
+            </div>
+            <div class="search-wrap">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="searchInput" type="search" placeholder="搜索标题、摘要、标签或域名" autocomplete="off" aria-label="搜索全部收藏" />
+              <button id="clearSearchBtn" class="search-clear hidden" type="button" aria-label="清空搜索">×</button>
+              <kbd id="searchShortcut">⌘ K</kbd>
+            </div>
+          </div>
+          <div id="bookmarkList" class="bookmark-list"></div>
+          <div id="emptyState" class="empty-state hidden">
+            <div class="empty-illustration"><span>⌁</span></div>
+            <strong id="emptyTitle">这里还没有网站</strong>
+            <p id="emptyDescription">收藏当前网页，或切换其他分类看看</p>
+            <button id="emptyCaptureBtn">收藏当前页</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="captureModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="captureTitle">
+        <button id="modalBackdrop" class="modal-backdrop" aria-label="关闭"></button>
+        <section class="capture-card">
+          <div class="capture-head">
+            <div><span id="captureEyebrow" class="eyebrow">新建收藏</span><h2 id="captureTitle">收藏当前网页</h2></div>
+            <button id="closeModalBtn" class="close-btn" aria-label="关闭">×</button>
+          </div>
+          <div class="page-preview">
+            <div class="preview-icon">↗</div>
+            <div>
+              <input id="titleInput" class="title-input" type="text" placeholder="网页标题" />
+              <input id="urlText" class="url-text" type="url" placeholder="https://example.com" />
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="field"><span>保存到分类</span><select id="categorySelect"></select></label>
+            <div class="ai-actions">
+              <button id="aiBtn" class="ai-btn">
+                <svg viewBox="0 0 24 24"><path d="m12 3 1.45 4.02L17.5 8.5l-4.05 1.48L12 14l-1.45-4.02L6.5 8.5l4.05-1.48L12 3Z"/><path d="m18.5 14 .88 2.12 2.12.88-2.12.88L18.5 20l-.88-2.12L15.5 17l2.12-.88L18.5 14Z"/></svg>
+                <span>AI 分类</span>
+              </button>
+              <button id="summaryBtn" class="ai-btn summary-btn"><span>生成摘要</span></button>
+            </div>
+          </div>
+          <label class="summary-field">
+            <span>内容摘要</span>
+            <textarea id="summaryInput" placeholder="点击“生成摘要”，AI 将读取当前网页正文并提炼内容"></textarea>
+          </label>
+          <label class="tags-field">
+            <span>内容标签</span>
+            <input id="tagsInput" type="text" placeholder="使用逗号分隔，例如：Redis，数据结构，后端开发" />
+          </label>
+          <div id="aiResult" class="ai-result hidden"></div>
+          <div class="modal-footer">
+            <span id="modelStatus" class="status-dot"><i></i>未配置模型</span>
+            <button id="saveBtn" class="save-btn">确认收藏</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="nativeDeleteModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="nativeDeleteTitle">
+        <div class="modal-backdrop"></div>
+        <section class="native-delete-card">
+          <div class="delete-sync-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>
+          </div>
+          <span class="eyebrow">浏览器书签联动</span>
+          <h2 id="nativeDeleteTitle">是否同时删除拾页收藏？</h2>
+          <p>你刚刚从 Chrome 书签中删除了：</p>
+          <div class="deleted-bookmark-preview">
+            <strong id="nativeDeleteName"></strong>
+            <span id="nativeDeleteUrl"></span>
+          </div>
+          <p class="delete-sync-note">选择保留后，它只会从浏览器书签中移除，拾页收藏不受影响。</p>
+          <div class="delete-sync-actions">
+            <button id="keepSyncedBookmarkBtn" class="secondary-action">在拾页保留</button>
+            <button id="deleteSyncedBookmarkBtn" class="danger-action">同时删除</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="duplicateModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="duplicateTitle">
+        <button id="duplicateBackdrop" class="modal-backdrop" aria-label="关闭"></button>
+        <section class="native-delete-card duplicate-card">
+          <div class="duplicate-icon">⇄</div>
+          <span class="eyebrow">发现重复网址</span>
+          <h2 id="duplicateTitle">这个网页已经收藏过</h2>
+          <p>可以打开已有收藏，或将本次填写的分类、标签和摘要合并进去。</p>
+          <div class="deleted-bookmark-preview">
+            <strong id="duplicateName"></strong>
+            <span id="duplicateMeta"></span>
+          </div>
+          <div class="delete-sync-actions duplicate-actions">
+            <button id="cancelDuplicateBtn" class="secondary-action">取消</button>
+            <button id="openDuplicateBtn" class="secondary-action">打开已有收藏</button>
+            <button id="mergeDuplicateBtn" class="primary-action">合并信息</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="toast" class="toast" role="status"><span id="toastMessage"></span><button id="toastAction" class="hidden" type="button"></button></div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
