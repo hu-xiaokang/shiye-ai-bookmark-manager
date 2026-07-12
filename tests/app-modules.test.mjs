@@ -51,3 +51,13 @@ test("AI client applies model budgets and normalizes compatible endpoints", asyn
   assert.equal(JSON.parse(captured.options.body).messages.length, 2);
   assert.equal(result.content, "done");
 });
+
+test("confidence uses gradual evidence penalties instead of a short-content hard cap", () => {
+  const { AiClient } = loadContext();
+  assert.deepEqual(JSON.parse(JSON.stringify(AiClient.calculateConfidence({
+    modelConfidence: 0.95, source: "open-tab", contentLength: 150
+  }))), { score: 0.87, level: "high" });
+  assert.equal(AiClient.calculateConfidence({ modelConfidence: 0.95, source: "title-url", contentLength: 0 }).score, 0.55);
+  assert.equal(AiClient.calculateConfidence({ modelConfidence: 0.95, source: "open-tab", contentLength: 0 }).score, 0.55);
+  assert.equal(AiClient.calculateConfidence({ modelConfidence: 0.95, source: "open-tab", contentLength: 1200 }).score, 0.95);
+});

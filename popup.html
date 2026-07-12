@@ -13,6 +13,12 @@
           <img class="brand-logo" src="assets/shiye-logo.svg" alt="拾页" />
           <div><h1>拾页</h1><p>AI 智能书签</p></div>
         </div>
+        <div class="search-wrap topbar-search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="searchInput" type="search" placeholder="搜索收藏" autocomplete="off" aria-label="搜索全部收藏" />
+          <button id="clearSearchBtn" class="search-clear hidden" type="button" aria-label="清空搜索">×</button>
+          <kbd id="searchShortcut">⌘ K</kbd>
+        </div>
         <div class="top-actions">
           <button id="captureBtn" class="capture-btn">
             <span>＋</span> 收藏当前页
@@ -42,12 +48,6 @@
                 <span id="countText">0 个收藏</span>
               </div>
               <span id="searchScope" class="search-scope hidden">全库搜索</span>
-            </div>
-            <div class="search-wrap">
-              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-              <input id="searchInput" type="search" placeholder="搜索标题、摘要、标签或域名" autocomplete="off" aria-label="搜索全部收藏" />
-              <button id="clearSearchBtn" class="search-clear hidden" type="button" aria-label="清空搜索">×</button>
-              <kbd id="searchShortcut">⌘ K</kbd>
             </div>
           </div>
           <div id="bookmarkList" class="bookmark-list"></div>
@@ -83,6 +83,10 @@
               </button>
               <button id="summaryBtn" class="ai-btn summary-btn"><span>生成摘要</span></button>
             </div>
+          </div>
+          <div class="read-later-row">
+            <label class="read-later-toggle"><input id="readLaterInput" type="checkbox" /><span><i></i>稍后阅读</span></label>
+            <label id="readLaterExpiryField" class="read-later-expiry disabled"><span>标记到期时间</span><input id="readLaterUntilInput" type="datetime-local" disabled /></label>
           </div>
           <label class="summary-field">
             <span>内容摘要</span>
@@ -142,12 +146,14 @@
 
       <div id="toast" class="toast" role="status"><span id="toastMessage"></span><button id="toastAction" class="hidden" type="button"></button></div>
     </main>
+    <div id="detailTooltip" class="detail-tooltip hidden" role="tooltip"></div>
     <script src="i18n.js"></script>
     <script src="category-colors.js"></script>
     <script src="model-utils.js"></script>
     <script src="app-utils.js"></script>
     <script src="ai-client.js"></script>
     <script src="page-content.js"></script>
+    <script src="bookmark-model.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

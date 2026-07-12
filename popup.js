@@ -1,7 +1,6 @@
-const DEFAULT_CATEGORIES = ["稍后阅读", "工作效率", "技术开发", "设计灵感", "学习资料", "生活兴趣", "新闻资讯", "工具服务"];
 const { canonicalUrl, isWebUrl, parseModelJson, escapeHtml } = AppUtils;
 const state = {
-  bookmarks: [], settings: {}, currentUrl: "", currentTabId: null, currentCategory: "稍后阅读",
+  bookmarks: [], settings: {}, currentUrl: "", currentTabId: null, currentCategory: BookmarkModel.UNCLASSIFIED_CATEGORY,
   currentTags: [], currentSummary: "", currentConfidence: null, currentConfidenceReason: "", currentContentSource: "", currentContentLength: 0, currentContentFingerprint: "", currentInputTokens: 0, currentOriginalInputTokens: 0, activeFilter: "全部", search: "",
   commonSites: [], recentSites: [], visibleItems: [], layoutHeight: 575, pendingNativeDeletions: [],
   editingBookmarkId: null, recycleBin: [], pendingDuplicate: null, undoAction: null, categoryColors: {}
@@ -25,12 +24,13 @@ const els = {
   nativeDeleteModal: $("nativeDeleteModal"), nativeDeleteName: $("nativeDeleteName"),
   nativeDeleteUrl: $("nativeDeleteUrl"), keepSynced: $("keepSyncedBookmarkBtn"),
   deleteSynced: $("deleteSyncedBookmarkBtn"), tags: $("tagsInput"),
+  readLater: $("readLaterInput"), readLaterUntil: $("readLaterUntilInput"), readLaterExpiryField: $("readLaterExpiryField"),
   captureTitle: $("captureTitle"), captureEyebrow: $("captureEyebrow"),
   emptyTitle: $("emptyTitle"), emptyDescription: $("emptyDescription"),
   duplicateModal: $("duplicateModal"), duplicateBackdrop: $("duplicateBackdrop"),
   duplicateName: $("duplicateName"), duplicateMeta: $("duplicateMeta"),
   cancelDuplicate: $("cancelDuplicateBtn"), openDuplicate: $("openDuplicateBtn"), mergeDuplicate: $("mergeDuplicateBtn"),
-  toastMessage: $("toastMessage"), toastAction: $("toastAction")
+  toastMessage: $("toastMessage"), toastAction: $("toastAction"), detailTooltip: $("detailTooltip")
 };
 
 async function init() {
@@ -41,7 +41,7 @@ async function init() {
   state.settings = data.settings || {};
   await I18n.init(state.settings);
   state.pendingNativeDeletions = Array.isArray(data.pendingNativeDeletions) ? data.pendingNativeDeletions : [];
-  const categories = [...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+  const categories = [...new Set([...BookmarkModel.normalizeCategories(state.settings.categories), ...state.bookmarks.map(b => b.category).filter(category => category && category !== BookmarkModel.READ_LATER_LABEL)])];
   const storedColors = state.settings.categoryColorVersion === CategoryColors.VERSION ? state.settings.categoryColors || {} : {};
   state.categoryColors = CategoryColors.ensure(categories, storedColors).colors;
   els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(categoryLabel(c))}</option>`).join("");
@@ -115,7 +115,7 @@ async function loadCurrentTab() {
     els.captureEyebrow.textContent = t("编辑收藏");
     els.captureTitle.textContent = t("修改收藏信息");
     els.save.textContent = t("更新这个收藏");
-    els.category.value = existing.category || "稍后阅读";
+    els.category.value = existing.category || BookmarkModel.UNCLASSIFIED_CATEGORY;
     state.currentTags = existing.tags || [];
     state.currentSummary = existing.summary || "";
     state.currentConfidence = Number.isFinite(Number(existing.aiConfidence)) ? Number(existing.aiConfidence) : null;
@@ -127,8 +127,36 @@ async function loadCurrentTab() {
     state.currentOriginalInputTokens = Number(existing.aiInputOriginalEstimatedTokens || 0);
     els.summary.value = state.currentSummary;
     els.tags.value = state.currentTags.join("，");
+    setReadLaterForm(existing);
     showAiResult();
   }
+}
+
+function toLocalDateTimeValue(value) {
+  const timestamp = BookmarkModel.expiryTime(value);
+  if (timestamp == null) return "";
+  const date = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000);
+  return date.toISOString().slice(0, 16);
+}
+
+function readLaterUntilValue() {
+  if (!els.readLater.checked || !els.readLaterUntil.value) return null;
+  const timestamp = new Date(els.readLaterUntil.value).getTime();
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function updateReadLaterExpiry({ setDefault = false } = {}) {
+  const enabled = els.readLater.checked;
+  els.readLaterUntil.disabled = !enabled;
+  els.readLaterExpiryField.classList.toggle("disabled", !enabled);
+  if (enabled && setDefault && !els.readLaterUntil.value) els.readLaterUntil.value = toLocalDateTimeValue(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  if (!enabled) els.readLaterUntil.value = "";
+}
+
+function setReadLaterForm(bookmark = null) {
+  els.readLater.checked = BookmarkModel.isReadLaterActive(bookmark || {});
+  els.readLaterUntil.value = els.readLater.checked ? toLocalDateTimeValue(bookmark?.readLaterUntil) : "";
+  updateReadLaterExpiry();
 }
 
 function resetCaptureForm() {
@@ -153,8 +181,9 @@ function resetCaptureForm() {
   els.tags.value = "";
   els.aiResult.innerHTML = "";
   els.aiResult.classList.add("hidden");
-  els.category.value = "稍后阅读";
+  els.category.value = BookmarkModel.UNCLASSIFIED_CATEGORY;
   if (!els.category.value && els.category.options.length) els.category.value = els.category.options[0].value;
+  setReadLaterForm();
   els.save.disabled = false;
   els.ai.disabled = false;
   els.summaryBtn.disabled = false;
@@ -168,10 +197,11 @@ function updateModelStatus() {
 }
 
 function render() {
-  const activityViews = ["常用网址", "最近浏览"];
-  const bookmarkCategories = ["全部", ...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+  hideDetailTooltip();
+  const activityViews = ["常用网址", "最近浏览", BookmarkModel.READ_LATER_LABEL];
+  const bookmarkCategories = ["全部", ...new Set([...BookmarkModel.normalizeCategories(state.settings.categories), ...state.bookmarks.map(b => b.category).filter(category => category && category !== BookmarkModel.READ_LATER_LABEL)])];
   state.categoryColors = CategoryColors.ensure(bookmarkCategories.slice(1), state.categoryColors).colors;
-  updatePopupHeight(bookmarkCategories.length);
+  updatePopupHeight(bookmarkCategories.length + Math.max(0, activityViews.length - 2));
   const utilityViews = ["回收站"];
   const allViews = [...bookmarkCategories, ...activityViews, ...utilityViews];
   if (!allViews.includes(state.activeFilter)) state.activeFilter = "全部";
@@ -179,10 +209,11 @@ function render() {
     const count = c === "全部" ? state.bookmarks.length
       : c === "常用网址" ? state.commonSites.length
       : c === "最近浏览" ? state.recentSites.length
+      : c === BookmarkModel.READ_LATER_LABEL ? state.bookmarks.filter(item => BookmarkModel.isReadLaterActive(item)).length
       : c === "回收站" ? state.recycleBin.length
       : state.bookmarks.filter(b => b.category === c).length;
     const isCategory = !activityViews.includes(c) && c !== "全部" && c !== "回收站";
-    const icon = c === "全部" ? "⌂" : c === "常用网址" ? "★" : c === "最近浏览" ? "◷" : "♲";
+    const icon = c === "全部" ? "⌂" : c === "常用网址" ? "★" : c === "最近浏览" ? "◷" : c === BookmarkModel.READ_LATER_LABEL ? "◴" : "♲";
     const kind = activityViews.includes(c) ? ` activity-icon activity-${index}` : "";
     const tone = isCategory ? "category" : getCategoryTone(c);
     const colorStyle = isCategory ? ` style="${escapeAttr(CategoryColors.cssVariables(categoryColor(c)))}"` : "";
@@ -214,6 +245,11 @@ function render() {
   let sourceItems;
   if (state.activeFilter === "常用网址") sourceItems = state.commonSites;
   else if (state.activeFilter === "最近浏览") sourceItems = state.recentSites;
+  else if (state.activeFilter === BookmarkModel.READ_LATER_LABEL) {
+    sourceItems = state.bookmarks
+      .filter(item => BookmarkModel.isReadLaterActive(item))
+      .sort(BookmarkModel.compareReadLaterExpiry);
+  }
   else if (state.activeFilter === "回收站") sourceItems = state.recycleBin.map(entry => ({ ...entry.bookmark, trashId: entry.id, deletedAt: entry.deletedAt, source: "trash" }));
   else sourceItems = keyword ? state.bookmarks : state.bookmarks.filter(item => state.activeFilter === "全部" || item.category === state.activeFilter);
   const filtered = sourceItems.filter(item => {
@@ -226,8 +262,8 @@ function render() {
   state.visibleItems = filtered;
 
   const unit = I18n.language === "en"
-    ? state.activeFilter === "最近浏览" ? "records" : state.activeFilter === "常用网址" ? "frequent sites" : state.activeFilter === "回收站" ? "to restore" : "bookmarks"
-    : state.activeFilter === "最近浏览" ? "条记录" : state.activeFilter === "常用网址" ? "个常用网站" : state.activeFilter === "回收站" ? "条待恢复" : "个收藏";
+    ? state.activeFilter === "最近浏览" ? "records" : state.activeFilter === "常用网址" ? "frequent sites" : state.activeFilter === BookmarkModel.READ_LATER_LABEL ? "to read" : state.activeFilter === "回收站" ? "to restore" : "bookmarks"
+    : state.activeFilter === "最近浏览" ? "条记录" : state.activeFilter === "常用网址" ? "个常用网站" : state.activeFilter === BookmarkModel.READ_LATER_LABEL ? "个待阅读" : state.activeFilter === "回收站" ? "条待恢复" : "个收藏";
   els.count.textContent = keyword
     ? (I18n.language === "en" ? `${isBookmarkView ? "All bookmarks" : "Current view"}: ${filtered.length} results` : `${isBookmarkView ? "全库" : "当前视图"}找到 ${filtered.length} 个结果`)
     : `${filtered.length} ${unit}`;
@@ -246,29 +282,44 @@ function render() {
     const savedBookmark = isHistory ? bookmarkByUrl.get(canonicalUrl(item.url)) : null;
     const pill = savedBookmark?.category || (isHistory ? "" : (item.category || "未分类"));
     const pillStyle = CategoryColors.cssVariables(categoryColor(pill));
-    const pillTitle = savedBookmark ? (I18n.language === "en" ? `Saved to “${categoryLabel(pill)}”` : `已收藏到“${pill}”`) : categoryLabel(pill);
-    const displayTags = (savedBookmark?.tags || item.tags || []).filter(Boolean).map(tag => String(tag).replace(/^#+\s*/, "")).slice(0, 3);
-    const tagsMarkup = displayTags.map(tag => `<span class="content-tag">#${highlightSearchText(tag, keyword)}</span>`).join("");
+    const pillTitle = categoryLabel(pill);
+    const allTags = (savedBookmark?.tags || item.tags || []).filter(Boolean).map(tag => String(tag).replace(/^#+\s*/, ""));
+    const displayTags = allTags.slice(0, 2);
+    const hiddenTagCount = Math.max(0, allTags.length - displayTags.length);
+    const tagsTitle = allTags.length ? (I18n.language === "en" ? `Tags: ${allTags.map(tag => `#${tag}`).join(", ")}` : `标签：${allTags.map(tag => `#${tag}`).join("、")}`) : "";
+    const tagsMarkup = `${displayTags.map(tag => `<span class="content-tag">#${highlightSearchText(tag, keyword)}</span>`).join("")}${hiddenTagCount ? `<span class="content-tag tag-more">+${hiddenTagCount}</span>` : ""}`;
     const editableId = isHistory ? savedBookmark?.id : item.id;
-    const aiStatusMarkup = !isHistory && !isTrash ? renderAiStatus(item) : "";
-    const confidenceMarkup = !isHistory && !isTrash ? renderConfidence(item) : "";
+    const aiInsightMarkup = !isHistory && !isTrash ? renderAiInsight(item) : "";
+    const readLaterMarkup = renderReadLaterMarker(savedBookmark || item);
     const actionsMarkup = isTrash
       ? `<div class="card-actions trash-actions"><button class="restore-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("恢复收藏"))}">${escapeHtml(t("恢复"))}</button><button class="purge-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("彻底删除"))}">×</button></div>`
       : isHistory
       ? `<div class="card-actions">${editableId ? `<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="${escapeAttr(t("编辑收藏"))}" aria-label="${escapeAttr(t("编辑收藏"))}">✎</button>` : ""}<span class="open-hint">↗</span></div>`
-      : `<div class="card-actions">${item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary ? `<button class="retry-ai-btn" data-retry-id="${escapeAttr(item.id)}" title="${escapeAttr(t("重新进行 AI 整理"))}">↻</button>` : ""}<button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="${escapeAttr(t("编辑收藏"))}" aria-label="${escapeAttr(t("编辑收藏"))}">✎</button><button class="delete-btn" title="${escapeAttr(t("删除"))}" aria-label="${escapeAttr(t("删除"))}">×</button></div>`;
+      : `<div class="card-actions bookmark-actions">${item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary ? `<button class="retry-ai-btn" data-retry-id="${escapeAttr(item.id)}" title="${escapeAttr(t("重新进行 AI 整理"))}">↻</button>` : ""}<div class="card-crud-actions"><button class="edit-btn" data-edit-id="${escapeAttr(editableId)}" title="${escapeAttr(t("编辑收藏"))}" aria-label="${escapeAttr(t("编辑收藏"))}">✎</button><button class="delete-btn" title="${escapeAttr(t("删除"))}" aria-label="${escapeAttr(t("删除"))}">×</button></div></div>`;
     return `<article class="bookmark-card ${isHistory ? "history-card" : ""}" data-id="${escapeAttr(item.id)}">
-      <div class="bookmark-main" title="${escapeAttr(summary || item.url)}">
-        <div class="bookmark-title">${highlightSearchText(item.title || item.url, keyword)}</div>
-        ${summary ? `<div class="bookmark-summary">${highlightSearchText(summary, keyword)}</div>` : ""}
-        <div class="bookmark-meta">${pill ? `<span class="category-pill" style="${escapeAttr(pillStyle)}" title="${escapeAttr(pillTitle)}">${highlightSearchText(categoryLabel(pill), keyword)}</span>` : ""}${tagsMarkup}${aiStatusMarkup}${confidenceMarkup}<span class="bookmark-host">${highlightSearchText(isTrash ? (I18n.language === "en" ? `Deleted ${relativeTime(item.deletedAt)}` : `删除于 ${relativeTime(item.deletedAt)}`) : host, keyword)}</span></div>
+      <div class="bookmark-main">
+        <div class="bookmark-title"${tooltipAttributes(I18n.language === "en" ? "Title" : "标题", item.title || item.url)}>${highlightSearchText(item.title || item.url, keyword)}</div>
+        ${summary ? `<div class="bookmark-summary"${tooltipAttributes(I18n.language === "en" ? "Summary" : "摘要", summary)}>${highlightSearchText(summary, keyword)}</div>` : ""}
+        <div class="bookmark-meta"><div class="bookmark-labels"${allTags.length ? ` data-tags="${escapeAttr(JSON.stringify(allTags))}" data-tooltip-title="${escapeAttr(I18n.language === "en" ? "All tags" : "全部标签")}" tabindex="0" aria-label="${escapeAttr(tagsTitle)}"` : ""}>${pill ? `<span class="category-pill" style="${escapeAttr(pillStyle)}"${tooltipAttributes(I18n.language === "en" ? "Category" : "分类", pillTitle)}>${highlightSearchText(categoryLabel(pill), keyword)}</span>` : ""}${tagsMarkup}</div><div class="bookmark-signals">${readLaterMarkup}${aiInsightMarkup}<span class="bookmark-host"${tooltipAttributes(I18n.language === "en" ? "Domain" : "域名", host)}>${highlightSearchText(isTrash ? (I18n.language === "en" ? `Deleted ${relativeTime(item.deletedAt)}` : `删除于 ${relativeTime(item.deletedAt)}`) : host, keyword)}</span></div></div>
       </div>
       ${actionsMarkup}
     </article>`;
   }).join("");
   els.empty.classList.toggle("hidden", filtered.length !== 0);
-  els.emptyTitle.textContent = keyword ? t("没有找到匹配的网址") : t("这里还没有网站");
-  els.emptyDescription.textContent = keyword ? t("试试更短的关键词，或搜索摘要、标签和域名") : t("收藏当前网页，或切换其他分类看看");
+  const emptyReadLater = !keyword && state.activeFilter === BookmarkModel.READ_LATER_LABEL;
+  els.emptyTitle.textContent = keyword ? t("没有找到匹配的网址") : emptyReadLater ? t("还没有稍后阅读的网址") : t("这里还没有网站");
+  els.emptyDescription.textContent = keyword ? t("试试更短的关键词，或搜索摘要、标签和域名") : emptyReadLater ? t("编辑收藏并开启稍后阅读标记，可按需设置到期时间") : t("收藏当前网页，或切换其他分类看看");
+}
+
+function renderReadLaterMarker(bookmark) {
+  if (!BookmarkModel.isReadLaterActive(bookmark)) return "";
+  const expiresAt = BookmarkModel.expiryTime(bookmark.readLaterUntil);
+  const detail = expiresAt == null
+    ? (I18n.language === "en" ? "Read later · No expiration" : "稍后阅读 · 不自动到期")
+    : (I18n.language === "en"
+      ? `Read later · Expires ${new Date(expiresAt).toLocaleString(locale())}`
+      : `稍后阅读 · ${new Date(expiresAt).toLocaleString(locale())} 到期`);
+  return `<span class="read-later-badge"${tooltipAttributes(I18n.language === "en" ? "Read later" : "稍后阅读", detail)}>◴ ${escapeHtml(t("稍后阅读"))}</span>`;
 }
 
 function highlightSearchText(value, query) {
@@ -303,7 +354,7 @@ function searchResultScore(item, query) {
   return score;
 }
 
-function renderAiStatus(item) {
+function renderAiInsight(item) {
   const status = item.aiStatus || (item.summary ? "completed" : "idle");
   const labels = {
     pending: [t("等待整理"), "pending"], processing: [t("AI 整理中"), "processing"],
@@ -311,13 +362,11 @@ function renderAiStatus(item) {
   };
   if (!labels[status]) return "";
   const [label, tone] = labels[status];
-  const title = item.aiError ? `${label}：${item.aiError}` : label;
-  return `<span class="ai-status ai-${tone}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
-}
-
-function renderConfidence(item) {
   const score = Number(item.aiConfidence);
-  if (!Number.isFinite(score)) return "";
+  if (status !== "completed" || !Number.isFinite(score)) {
+    const title = item.aiError ? `${label}：${item.aiError}` : label;
+    return `<span class="ai-insight ai-${tone}"${tooltipAttributes(I18n.language === "en" ? "AI status" : "AI 状态", title)}>${escapeHtml(label)}</span>`;
+  }
   const level = item.aiConfidenceLevel || (score < 0.6 ? "low" : score < 0.8 ? "medium" : "high");
   const percent = Math.round(Math.max(0, Math.min(1, score)) * 100);
   const sourceLabels = {
@@ -325,8 +374,8 @@ function renderConfidence(item) {
     "public-fetch": I18n.language === "en" ? "public page text" : "公开网页正文",
     "title-url": I18n.language === "en" ? "title and URL only" : "仅标题和网址"
   };
-  const title = [I18n.language === "en" ? `Classification confidence ${percent}%` : `分类置信度 ${percent}%`, sourceLabels[item.aiContentSource], item.aiConfidenceReason].filter(Boolean).join(" · ");
-  return `<span class="confidence-badge confidence-${level}" title="${escapeAttr(title)}">AI ${percent}%</span>`;
+  const title = [label, I18n.language === "en" ? `Classification confidence ${percent}%` : `分类置信度 ${percent}%`, sourceLabels[item.aiContentSource], item.aiConfidenceReason].filter(Boolean).join(" · ");
+  return `<span class="ai-insight confidence-${level}"${tooltipAttributes(I18n.language === "en" ? "AI confidence" : "AI 置信度", title)}><span>${escapeHtml(label)}</span><i aria-hidden="true"></i><strong>${percent}%</strong></span>`;
 }
 
 function purgeExpiredTrash(items) {
@@ -348,7 +397,7 @@ async function classifyWithAI(usageFeature = "classification") {
   let requestStarted = false;
   let inputOptimization = null;
   try {
-    const categories = state.settings.categories || DEFAULT_CATEGORIES;
+    const categories = BookmarkModel.normalizeCategories(state.settings.categories);
     const categoryCandidates = categories.map(category => `${category}${categoryLabel(category) !== category ? ` (${categoryLabel(category)})` : ""}`).join(", ");
     const rawPageContent = await extractPageContent();
     const compactedContent = ModelText.compactPageContent(rawPageContent, 2600);
@@ -382,17 +431,19 @@ async function classifyWithAI(usageFeature = "classification") {
     if (!content) throw new Error(I18n.language === "en" ? "The model returned no classification" : "模型没有返回分类结果");
     const result = parseModelJson(content);
     if (!result) throw new Error(I18n.language === "en" ? "Could not parse the model response" : "无法识别模型返回内容");
-    const category = categories.includes(result.category) ? result.category : "稍后阅读";
+    const category = categories.includes(result.category) ? result.category : BookmarkModel.UNCLASSIFIED_CATEGORY;
     state.currentCategory = category;
     state.currentTags = Array.isArray(result.tags) ? result.tags.slice(0, 4).map(String) : [];
     state.currentSummary = String(result.summary || "").trim();
-    let confidence = Number(result.confidence);
-    if (confidence > 1 && confidence <= 100) confidence /= 100;
-    if (!Number.isFinite(confidence)) confidence = rawPageContent ? 0.84 : 0.42;
-    confidence = Math.max(0, Math.min(1, confidence));
-    if (!rawPageContent) confidence = Math.min(confidence, 0.5);
-    else if (rawPageContent.length < 200) confidence = Math.min(confidence, 0.58);
-    state.currentConfidence = Math.round(confidence * 100) / 100;
+    const confidence = AiClient.calculateConfidence({
+      modelConfidence: result.confidence,
+      source: rawPageContent ? "open-tab" : "title-url",
+      contentLength: rawPageContent.length,
+      categoryRecognized: categories.includes(result.category),
+      hasSummary: Boolean(state.currentSummary),
+      hasTags: state.currentTags.length > 0
+    });
+    state.currentConfidence = confidence.score;
     state.currentConfidenceReason = String(result.confidenceReason || "").trim().slice(0, 240);
     state.currentContentSource = rawPageContent ? "open-tab" : "title-url";
     state.currentContentLength = rawPageContent.length;
@@ -493,6 +544,10 @@ function syncCurrentUrlFromForm() {
 async function saveBookmark() {
   const title = els.title.value.trim();
   if (!title || !syncCurrentUrlFromForm()) return showToast(I18n.language === "en" ? "Enter a valid title and URL" : "请填写有效的标题和网址");
+  const readLaterUntil = readLaterUntilValue();
+  if (els.readLater.checked && readLaterUntil && BookmarkModel.expiryTime(readLaterUntil) <= Date.now()) {
+    return showToast(I18n.language === "en" ? "The expiration must be in the future" : "到期时间需要晚于当前时间");
+  }
   const existing = state.editingBookmarkId
     ? state.bookmarks.find(item => item.id === state.editingBookmarkId)
     : null;
@@ -511,6 +566,7 @@ async function saveBookmark() {
   const bookmark = {
     ...(existing || {}), id: existing?.id || crypto.randomUUID(), title, url: state.currentUrl,
     category: els.category.value, tags: state.currentTags, summary: state.currentSummary,
+    readLater: els.readLater.checked, readLaterUntil,
     aiStatus: state.currentSummary || state.currentTags.length ? "completed" : (modelReady && autoClassify ? "pending" : "idle"),
     aiError: "",
     aiConfidence: state.currentConfidence ?? existing?.aiConfidence ?? null,
@@ -557,7 +613,8 @@ function collectBookmarkDraft(existing = null) {
   const tags = [...new Set(els.tags.value.split(/[,，、\n]+/).map(tag => tag.replace(/^#+\s*/, "").trim()).filter(Boolean))].slice(0, 8);
   return {
     ...(existing || {}), title: els.title.value.trim(), url: state.currentUrl,
-    category: els.category.value, tags, summary: els.summary.value.trim(), updatedAt: new Date().toISOString()
+    category: els.category.value, tags, summary: els.summary.value.trim(),
+    readLater: els.readLater.checked, readLaterUntil: readLaterUntilValue(), updatedAt: new Date().toISOString()
   };
 }
 
@@ -571,6 +628,8 @@ async function mergeDuplicateBookmark() {
     category: draft.category || duplicate.category,
     summary: (draft.summary || "").length >= (duplicate.summary || "").length ? draft.summary : duplicate.summary,
     tags: [...new Set([...(duplicate.tags || []), ...(draft.tags || [])])].slice(0, 8),
+    readLater: Boolean(draft.readLater),
+    readLaterUntil: draft.readLater ? draft.readLaterUntil : null,
     nativeBookmarkIds: [...new Set([...(duplicate.nativeBookmarkIds || []), ...(draft.nativeBookmarkIds || [])])],
     nativeBookmarkId: duplicate.nativeBookmarkId || draft.nativeBookmarkId || null,
     aiStatus: draft.summary || duplicate.summary ? "completed" : (duplicate.aiStatus || "idle"),
@@ -789,9 +848,10 @@ function openEditModal(bookmarkId) {
   els.captureTitle.textContent = t("修改收藏信息");
   els.title.value = bookmark.title || bookmark.url;
   els.url.value = bookmark.url;
-  els.category.value = bookmark.category || "稍后阅读";
+  els.category.value = bookmark.category || BookmarkModel.UNCLASSIFIED_CATEGORY;
   els.summary.value = state.currentSummary;
   els.tags.value = state.currentTags.join("，");
+  setReadLaterForm(bookmark);
   els.save.textContent = t("保存修改");
   showAiResult();
   applyPopupHeight(Math.max(state.layoutHeight, 575));
@@ -874,8 +934,36 @@ async function resolveNativeDeletion(deleteFromPlugin) {
 
 function escapeAttr(value = "") { return escapeHtml(value); }
 
+function tooltipAttributes(title, content) {
+  if (!String(content || "").trim()) return "";
+  return ` data-tooltip-title="${escapeAttr(title)}" data-tooltip-content="${escapeAttr(content)}" tabindex="0" aria-label="${escapeAttr(`${title}：${content}`)}"`;
+}
+
+function showDetailTooltip(anchor) {
+  let tags = [];
+  try { tags = JSON.parse(anchor.dataset.tags || "[]"); } catch {}
+  const content = anchor.dataset.tooltipContent || "";
+  if ((!Array.isArray(tags) || !tags.length) && !content) return;
+  els.detailTooltip.innerHTML = Array.isArray(tags) && tags.length
+    ? `<div class="tooltip-tags">${tags.map(tag => `<span>#${escapeHtml(tag)}</span>`).join("")}</div>`
+    : `<p>${escapeHtml(content)}</p>`;
+  els.detailTooltip.classList.remove("hidden");
+  const anchorRect = anchor.getBoundingClientRect();
+  const tooltipRect = els.detailTooltip.getBoundingClientRect();
+  const left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - tooltipRect.width - 8));
+  let top = anchorRect.bottom + 7;
+  if (top + tooltipRect.height > window.innerHeight - 8) top = Math.max(8, anchorRect.top - tooltipRect.height - 7);
+  els.detailTooltip.style.left = `${Math.round(left)}px`;
+  els.detailTooltip.style.top = `${Math.round(top)}px`;
+}
+
+function hideDetailTooltip() {
+  els.detailTooltip.classList.add("hidden");
+}
+
 els.ai.addEventListener("click", () => classifyWithAI());
 els.summaryBtn.addEventListener("click", generateSummary);
+els.readLater.addEventListener("change", () => updateReadLaterExpiry({ setDefault: true }));
 els.save.addEventListener("click", saveBookmark);
 els.capture.addEventListener("click", openCaptureModal);
 els.emptyCapture.addEventListener("click", openCaptureModal);
@@ -935,6 +1023,21 @@ els.list.addEventListener("click", e => {
   const item = state.visibleItems.find(b => b.id === card.dataset.id);
   if (item) chrome.tabs.create({ url: item.url });
 });
+els.list.addEventListener("pointerover", e => {
+  const region = e.target.closest("[data-tooltip-content], [data-tags]");
+  if (region) showDetailTooltip(region);
+});
+els.list.addEventListener("pointerout", e => {
+  const region = e.target.closest("[data-tooltip-content], [data-tags]");
+  if (region && !region.contains(e.relatedTarget)) hideDetailTooltip();
+});
+els.list.addEventListener("focusin", e => {
+  const region = e.target.closest("[data-tooltip-content], [data-tags]");
+  if (region) showDetailTooltip(region);
+});
+els.list.addEventListener("focusout", e => {
+  if (e.target.closest("[data-tooltip-content], [data-tags]")) hideDetailTooltip();
+});
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.bookmarks) {
     state.bookmarks = Array.isArray(changes.bookmarks.newValue) ? changes.bookmarks.newValue : [];
@@ -951,7 +1054,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.settings) {
     state.settings = changes.settings.newValue || {};
     const selected = els.category.value;
-    const categories = [...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+    const categories = [...new Set([...BookmarkModel.normalizeCategories(state.settings.categories), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
     const storedColors = state.settings.categoryColorVersion === CategoryColors.VERSION ? state.settings.categoryColors || {} : state.categoryColors;
     state.categoryColors = CategoryColors.ensure(categories, storedColors).colors;
     els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");

@@ -40,6 +40,27 @@
     return global.ModelText.withOutputBudget({ model, temperature, messages }, model, maxOutputTokens);
   }
 
+  function calculateConfidence({ modelConfidence, source = "title-url", contentLength = 0, categoryRecognized = true, hasSummary = true, hasTags = true } = {}) {
+    let score = Number(modelConfidence);
+    if (score > 1 && score <= 100) score /= 100;
+    if (!Number.isFinite(score)) score = source === "open-tab" ? 0.82 : source === "public-fetch" ? 0.72 : 0.52;
+    score = Math.max(0, Math.min(1, score));
+
+    const length = Math.max(0, Number(contentLength) || 0);
+    if (source === "title-url") score = Math.min(score, 0.55);
+    else if (source === "public-fetch") score -= 0.04;
+
+    if (length === 0) score = Math.min(score, 0.55);
+    else if (length < 200) score -= 0.08;
+    else if (length < 500) score -= 0.03;
+    else if (length > 1500) score += 0.03;
+
+    if (!categoryRecognized) score = Math.min(score, 0.35);
+    if (!hasSummary || !hasTags) score = Math.min(score, 0.55);
+    score = Math.round(Math.max(0, Math.min(0.98, score)) * 100) / 100;
+    return { score, level: score < 0.6 ? "low" : score < 0.8 ? "medium" : "high" };
+  }
+
   async function request({ apiUrl, apiKey, body }) {
     const response = await fetch(global.AppUtils.normalizeEndpoint(apiUrl), {
       method: "POST",
@@ -55,5 +76,5 @@
     return { ok: true, status: response.status, errorText: "", data, content: data.choices?.[0]?.message?.content || "" };
   }
 
-  global.AiClient = { classificationMessages, summaryMessages, buildRequest, request };
+  global.AiClient = { classificationMessages, summaryMessages, buildRequest, calculateConfidence, request };
 })(globalThis);

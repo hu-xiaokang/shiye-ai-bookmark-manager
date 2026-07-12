@@ -24,9 +24,9 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   const localStore = {
     bookmarks: [{
       id: "existing", title: "Existing", url: "http://www.example.com/page?utm_source=test",
-      category: "稍后阅读", tags: [], summary: "", nativeBookmarkIds: ["old"]
+      category: "技术开发", tags: [], summary: "", nativeBookmarkIds: ["old"]
     }],
-    settings: { categories: ["稍后阅读"] }, recycleBin: [], modelUsage: {}
+    settings: { categories: ["技术开发"] }, recycleBin: [], modelUsage: {}
   };
   const sessionStore = {};
   const chrome = {
@@ -53,13 +53,15 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   vm.runInContext(fs.readFileSync(new URL("../app-utils.js", import.meta.url), "utf8"), context);
   vm.runInContext(fs.readFileSync(new URL("../ai-client.js", import.meta.url), "utf8"), context);
   vm.runInContext(fs.readFileSync(new URL("../page-content.js", import.meta.url), "utf8"), context);
+  vm.runInContext(fs.readFileSync(new URL("../bookmark-model.js", import.meta.url), "utf8"), context);
   vm.runInContext(fs.readFileSync(new URL("../background.js", import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(context.PageContent.isPublicPageUrl("http://127.0.0.1/admin"), false);
   assert.equal(context.PageContent.isPublicPageUrl("https://192.168.1.10/private"), false);
   assert.equal(context.PageContent.isPublicPageUrl("https://example.com/public"), true);
   assert.match(context.PageContent.htmlToPlainText("<html><script>ignore()</script><main>Useful &amp; safe</main></html>"), /Useful & safe/);
-  assert.equal(context.evaluateClassificationConfidence({ confidence: 0.95, tags: ["x"], summary: "x" }, { source: "title-url", content: "" }, true).score, 0.5);
+  assert.equal(context.evaluateClassificationConfidence({ confidence: 0.95, tags: ["x"], summary: "x" }, { source: "title-url", content: "" }, true).score, 0.55);
+  assert.equal(context.evaluateClassificationConfidence({ confidence: 0.95, tags: ["x"], summary: "x" }, { source: "open-tab", content: "" }, true).score, 0.55);
 
   const response = await context.runNativeBookmarkImport([
     { title: "Existing copy", url: "https://example.com/page", nativeBookmarkIds: ["10", "11"], folderPath: "Work" },
@@ -80,7 +82,7 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   assert.equal(localStore.lastSafetyBackup.bookmarks.length, 1);
 
   localStore.settings = {
-    categories: ["稍后阅读"], apiUrl: "https://model.example/v1", apiKey: "test-key", model: "test-model", language: "en"
+    categories: ["技术开发"], apiUrl: "https://model.example/v1", apiKey: "test-key", model: "test-model", language: "en"
   };
   let modelRequest = null;
   let modelCallCount = 0;
@@ -99,7 +101,7 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
       ok: true,
       async json() {
         return {
-          choices: [{ message: { content: JSON.stringify({ category: "稍后阅读", tags: ["documentation"], summary: modelSummary, confidence: modelConfidence, confidenceReason: "Content was limited." }) } }],
+          choices: [{ message: { content: JSON.stringify({ category: "技术开发", tags: ["documentation"], summary: modelSummary, confidence: modelConfidence, confidenceReason: "Content was limited." }) } }],
           usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
         };
       }
@@ -115,7 +117,7 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   const organized = localStore.bookmarks.find(item => item.url === "https://api.example.com/reference");
   assert.equal(organized.summary, "Technical documentation.");
   assert.deepEqual(organized.tags, ["documentation"]);
-  assert.equal(organized.aiConfidence, 0.45);
+  assert.equal(organized.aiConfidence, 0.33);
   assert.equal(organized.aiConfidenceLevel, "low");
   assert.equal(organized.aiContentSource, "public-fetch");
   assert.equal(localStore.modelUsage.requests, 1);
@@ -124,6 +126,27 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   modelConfidence = 0.92;
   modelSummary = "Improved summary from the opened page.";
   chrome.tabs.query = async () => [{ id: 7, active: true, status: "complete", url: organized.url }];
+  let extractionTarget = null;
+  chrome.scripting.executeScript = async details => {
+    extractionTarget = details.target;
+    return [
+      { result: "Application shell" },
+      { result: "Authenticated rendered content from an embedded frame. ".repeat(80) }
+    ];
+  };
+  const callsBeforeDirectRead = modelCallCount;
+  const openedContext = await context.PageContent.extractPageContext(organized.url, { renderWaitMs: 0 });
+  assert.equal(openedContext.source, "open-tab");
+  assert.match(openedContext.content, /Authenticated rendered content/);
+  assert.equal(extractionTarget.allFrames, true);
+  assert.equal(modelCallCount, callsBeforeDirectRead);
+
+  chrome.scripting.executeScript = async () => [{ result: "" }];
+  const emptyOpenedContext = await context.PageContent.extractPageContext(organized.url, { renderWaitMs: 0 });
+  assert.equal(emptyOpenedContext.source, "open-tab");
+  assert.equal(emptyOpenedContext.content, "");
+  assert.equal(modelCallCount, callsBeforeDirectRead);
+
   chrome.scripting.executeScript = async () => [{ result: "Detailed opened page content. ".repeat(100) }];
   const reprocess = await context.maybeReclassifyLowConfidence({ id: 7, active: true, status: "complete", url: organized.url });
   assert.equal(reprocess.triggered, true);
@@ -147,4 +170,13 @@ test("native bookmark import deduplicates URLs, links IDs, and creates a safety 
   const noNewContent = await context.maybeReclassifyLowConfidence({ id: 7, active: true, status: "complete", url: organized.url });
   assert.equal(noNewContent.triggered, false);
   assert.equal(modelCallCount, callsBeforeSkip);
+
+  reviewed.readLater = true;
+  reviewed.readLaterUntil = new Date(Date.now() - 1000).toISOString();
+  const changed = await context.clearExpiredReadLaterMarkers();
+  assert.equal(changed, true);
+  assert.equal(reviewed.readLater, true);
+  const expiredRecord = localStore.bookmarks.find(item => item.id === reviewed.id);
+  assert.equal(expiredRecord.readLater, false);
+  assert.equal(expiredRecord.readLaterUntil, null);
 });

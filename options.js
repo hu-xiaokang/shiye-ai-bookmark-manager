@@ -1,4 +1,3 @@
-const DEFAULT_CATEGORIES = ["稍后阅读", "工作效率", "技术开发", "设计灵感", "学习资料", "生活兴趣", "新闻资讯", "工具服务"];
 const { canonicalUrl, escapeHtml } = AppUtils;
 let settings = {};
 let usageStats = {};
@@ -23,7 +22,7 @@ async function init() {
   $("apiUrl").value = settings.apiUrl || "https://api.openai.com/v1";
   $("apiKey").value = settings.apiKey || "";
   $("modelName").value = settings.model || "gpt-4o-mini";
-  settings.categories = settings.categories || [...DEFAULT_CATEGORIES];
+  settings.categories = BookmarkModel.normalizeCategories(settings.categories);
   const storedColors = settings.categoryColorVersion === CategoryColors.VERSION ? settings.categoryColors || {} : {};
   const colorResult = CategoryColors.ensure(settings.categories, storedColors);
   settings.categoryColors = colorResult.colors;
@@ -337,6 +336,9 @@ async function addCategory() {
   const input = $("newCategory");
   const value = input.value.trim();
   if (!value) return;
+  if ([BookmarkModel.READ_LATER_LABEL, categoryLabel(BookmarkModel.READ_LATER_LABEL)].some(label => label.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+    return toast(l("稍后阅读是网址标记，不能作为分类", "Read later is a bookmark marker, not a category"));
+  }
   if (settings.categories.includes(value)) return toast("这个分类已经存在");
   settings.categories.push(value);
   settings.categoryColors = CategoryColors.ensure(settings.categories, settings.categoryColors || {}).colors;
@@ -352,7 +354,7 @@ async function removeCategory(index) {
   if (affected.length || affectedTrash.length) {
     const available = settings.categories.filter((_, itemIndex) => itemIndex !== index);
     const availableLabels = available.map(categoryLabel);
-    const input = prompt(l(`“${category}”中有 ${affected.length} 个收藏，回收站中有 ${affectedTrash.length} 个。请输入迁移目标分类：\n${available.join("、")}`, `“${categoryLabel(category)}” contains ${affected.length} bookmarks and ${affectedTrash.length} trash items. Enter a target category:\n${availableLabels.join(", ")}`), categoryLabel(available[0] || "稍后阅读"));
+    const input = prompt(l(`“${category}”中有 ${affected.length} 个收藏，回收站中有 ${affectedTrash.length} 个。请输入迁移目标分类：\n${available.join("、")}`, `“${categoryLabel(category)}” contains ${affected.length} bookmarks and ${affectedTrash.length} trash items. Enter a target category:\n${availableLabels.join(", ")}`), categoryLabel(available[0] || BookmarkModel.UNCLASSIFIED_CATEGORY));
     if (input === null) return;
     target = available.find(item => item === input.trim() || categoryLabel(item) === input.trim()) || "";
     if (!available.includes(target)) return toast("请输入现有的目标分类");
@@ -444,6 +446,7 @@ function sanitizeSettings(value = {}) {
   const next = { ...value };
   delete next.enableAds;
   delete next.adFeedUrl;
+  next.categories = BookmarkModel.normalizeCategories(next.categories);
   return next;
 }
 

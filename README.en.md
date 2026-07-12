@@ -80,7 +80,9 @@ Untranslated strings fall back to Simplified Chinese, so a new locale can be int
 - Save and edit the current page.
 - Scan existing Chrome bookmarks, preview new, linked, and duplicate items, then organize them in bulk with AI.
 - Edit bookmark titles, URLs, categories, summaries, and tags.
+- Mark bookmarks as **Read later**, prioritize the nearest expiration, and automatically clear the marker when it expires.
 - Automatically classify, tag, and summarize pages with AI.
+- Prefer authenticated, dynamically rendered content from open browser tabs, including accessible embedded frames.
 - Score AI classification confidence and optionally review a low-confidence bookmark once when its full page content becomes available.
 - Full-library fuzzy search with `⌘/Ctrl + K` or `/` to focus.
 - Frequently visited ranking based on visit frequency, recency, typed visits, and active browsing time.
@@ -104,6 +106,7 @@ See [PRIVACY.md](PRIVACY.md) for details.
 ├── manifest.json        # Chrome Manifest V3 manifest
 ├── i18n.js              # Runtime language resources and translation helper
 ├── category-colors.js   # Stable, high-contrast automatic category colors
+├── bookmark-model.js    # Read-later markers, expiration, and category constraints
 ├── model-utils.js       # Input compaction, token estimation, and output budgets
 ├── app-utils.js         # URL normalization, response parsing, and safe escaping
 ├── ai-client.js         # Shared model prompts, requests, and response contract
