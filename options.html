@@ -10,7 +10,7 @@
     <main class="page">
       <aside>
         <div class="brand"><img class="mark" src="assets/shiye-logo.svg" alt="拾页" /><div><strong>拾页</strong><span>AI 智能书签</span></div></div>
-        <nav><a class="active" href="#model">模型配置</a><a href="#behavior">默认行为</a><a href="#usage">用量统计</a><a href="#categories">分类管理</a><a href="#data">数据管理</a></nav>
+        <nav><a class="active" href="#model">模型配置</a><a href="#behavior">默认行为</a><a href="#native-import">书签整理</a><a href="#usage">用量统计</a><a href="#categories">分类管理</a><a href="#data">数据管理</a></nav>
         <p class="aside-note">所有配置与收藏仅保存在本机浏览器中。</p>
       </aside>
       <section class="content">
@@ -38,10 +38,48 @@
               <div><strong>原生书签删除时自动删除</strong><span>从 Chrome 书签删除后，同时删除对应的拾页收藏；关闭后改为弹窗确认</span></div>
               <span class="toggle"><input id="autoDeleteWithNative" type="checkbox" /><i></i></span>
             </label>
+            <div class="behavior-row">
+              <div><strong>打开低置信度网页时自动重新整理</strong><span>当网页正文可读取时重新生成分类、标签和摘要；每条收藏最多自动复核一次</span></div>
+              <div class="behavior-controls">
+                <select id="lowConfidenceThreshold" aria-label="低置信度阈值"><option value="0.5">低于 50%</option><option value="0.6">低于 60%</option><option value="0.7">低于 70%</option></select>
+                <label class="toggle"><input id="autoReclassifyLowConfidenceOnOpen" type="checkbox" /><i></i></label>
+              </div>
+            </div>
           </div>
           <div class="ai-queue-panel">
             <div><strong>AI 整理队列</strong><span id="aiQueueSummary">正在统计待处理收藏…</span></div>
             <button id="retryAllAiBtn" class="secondary">重新处理失败与缺失内容</button>
+          </div>
+        </article>
+
+        <article id="native-import" class="card">
+          <div class="card-title native-import-title">
+            <div class="icon native-import-icon">✦</div>
+            <div><h2>一键整理 Chrome 书签</h2><p>扫描现有原生书签，去重后批量生成分类、标签和摘要</p></div>
+            <button id="scanNativeBookmarksBtn" class="text-action">开始扫描</button>
+          </div>
+          <div id="nativeImportIntro" class="native-import-intro">
+            <strong>不会直接修改 Chrome 原生书签</strong>
+            <span>导入前会建立安全快照；重复网址只建立关联，不会生成重复收藏。</span>
+          </div>
+          <div id="nativeImportPreview" class="native-import-panel hidden">
+            <div class="native-import-stats">
+              <div><strong id="nativeTotalCount">0</strong><span>原生书签</span></div>
+              <div><strong id="nativeNewCount">0</strong><span>新增收藏</span></div>
+              <div><strong id="nativeLinkedCount">0</strong><span>已有收藏</span></div>
+              <div><strong id="nativeDuplicateCount">0</strong><span>重复网址</span></div>
+            </div>
+            <p id="nativeImportPreviewNote"></p>
+            <div class="native-import-actions">
+              <button id="importNativeOnlyBtn" class="secondary">仅导入并关联</button>
+              <button id="organizeNativeBtn" class="primary">导入并使用 AI 整理</button>
+            </div>
+          </div>
+          <div id="nativeImportProgress" class="native-import-panel hidden">
+            <div class="native-progress-head"><div><strong id="nativeProgressTitle">正在整理 Chrome 书签</strong><span id="nativeProgressCurrent"></span></div><span id="nativeProgressPercent">0%</span></div>
+            <div class="native-progress-track"><i id="nativeProgressBar"></i></div>
+            <div id="nativeProgressMeta" class="native-progress-meta"></div>
+            <div class="native-import-actions"><button id="cancelNativeImportBtn" class="secondary">停止任务</button></div>
           </div>
         </article>
 
@@ -59,6 +97,7 @@
           </div>
           <div class="usage-meta">
             <span>今日 <strong id="usageToday">0 Token</strong></span>
+            <span>估算节省 <strong id="usageEstimatedSaved">0 Token</strong></span>
             <span>成功/失败 <strong id="usageSuccess">0 / 0</strong></span>
             <span>最后调用 <strong id="usageLastUsed">暂无</strong></span>
           </div>
@@ -93,6 +132,10 @@
       <div id="toast" class="toast"></div>
     </main>
     <script src="i18n.js"></script>
+    <script src="category-colors.js"></script>
+    <script src="model-utils.js"></script>
+    <script src="app-utils.js"></script>
+    <script src="ai-client.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

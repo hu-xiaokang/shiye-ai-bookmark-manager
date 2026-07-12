@@ -1,9 +1,12 @@
 const DEFAULT_CATEGORIES = ["稍后阅读", "工作效率", "技术开发", "设计灵感", "学习资料", "生活兴趣", "新闻资讯", "工具服务"];
+const { canonicalUrl, escapeHtml } = AppUtils;
 let settings = {};
 let usageStats = {};
 let bookmarksCache = [];
 let recycleBinCache = [];
 let pendingImport = null;
+let nativeBookmarkScan = null;
+let nativeImportJob = null;
 const $ = id => document.getElementById(id);
 const t = (source, params) => I18n.t(source, params);
 const locale = () => I18n.language === "en" ? "en-US" : "zh-CN";
@@ -11,7 +14,7 @@ const categoryLabel = category => t(category);
 const l = (zh, en) => I18n.language === "en" ? en : zh;
 
 async function init() {
-  const data = await chrome.storage.local.get(["settings", "modelUsage", "bookmarks", "recycleBin", "lastSafetyBackup"]);
+  const data = await chrome.storage.local.get(["settings", "modelUsage", "bookmarks", "recycleBin", "lastSafetyBackup", "nativeBookmarkImportJob"]);
   settings = sanitizeSettings(data.settings || {});
   await I18n.init(settings);
   usageStats = data.modelUsage || {};
@@ -21,15 +24,26 @@ async function init() {
   $("apiKey").value = settings.apiKey || "";
   $("modelName").value = settings.model || "gpt-4o-mini";
   settings.categories = settings.categories || [...DEFAULT_CATEGORIES];
+  const storedColors = settings.categoryColorVersion === CategoryColors.VERSION ? settings.categoryColors || {} : {};
+  const colorResult = CategoryColors.ensure(settings.categories, storedColors);
+  settings.categoryColors = colorResult.colors;
+  settings.categoryColorVersion = CategoryColors.VERSION;
+  if (colorResult.changed || data.settings?.categoryColorVersion !== CategoryColors.VERSION) await chrome.storage.local.set({ settings });
   settings.autoClassifyOnSave = settings.autoClassifyOnSave ?? true;
   settings.autoDeleteWithNative = settings.autoDeleteWithNative ?? true;
+  settings.autoReclassifyLowConfidenceOnOpen = settings.autoReclassifyLowConfidenceOnOpen ?? true;
+  settings.lowConfidenceThreshold = Number(settings.lowConfidenceThreshold ?? 0.6);
   settings.language = settings.language || "auto";
   $("languageSelect").value = settings.language;
   $("autoClassifyOnSave").checked = settings.autoClassifyOnSave;
   $("autoDeleteWithNative").checked = settings.autoDeleteWithNative;
+  $("autoReclassifyLowConfidenceOnOpen").checked = settings.autoReclassifyLowConfidenceOnOpen;
+  $("lowConfidenceThreshold").value = String(settings.lowConfidenceThreshold);
   renderCategories();
   renderUsage();
   renderAiQueue();
+  nativeImportJob = data.nativeBookmarkImportJob || null;
+  renderNativeImportJob();
   $("restoreBackupBtn").disabled = !data.lastSafetyBackup;
 }
 
@@ -40,6 +54,8 @@ function readForm() {
     categories: settings.categories,
     autoClassifyOnSave: $("autoClassifyOnSave").checked,
     autoDeleteWithNative: $("autoDeleteWithNative").checked,
+    autoReclassifyLowConfidenceOnOpen: $("autoReclassifyLowConfidenceOnOpen").checked,
+    lowConfidenceThreshold: Number($("lowConfidenceThreshold").value),
     language: $("languageSelect").value
   };
 }
@@ -69,17 +85,19 @@ async function testConnection() {
   try {
     if (!next.apiUrl || !next.apiKey || !next.model) throw new Error(t("请先完整填写模型配置"));
     requestStarted = true;
-    const response = await fetch(normalizeEndpoint(next.apiUrl), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${next.apiKey}` },
-      body: JSON.stringify({ model: next.model, temperature: 0, max_tokens: 8, messages: [{ role: "user", content: I18n.language === "en" ? "Reply only: Connected" : "只回复：连接成功" }] })
+    const body = AiClient.buildRequest({
+        model: next.model,
+        temperature: 0,
+        maxOutputTokens: 8,
+        messages: [{ role: "user", content: I18n.language === "en" ? "Reply only: Connected" : "只回复：连接成功" }]
     });
+    const response = await AiClient.request({ apiUrl: next.apiUrl, apiKey: next.apiKey, body });
     if (!response.ok) {
       usageRecorded = true;
       await reportModelUsage("connection_test", null, false, next.model);
       throw new Error(I18n.language === "en" ? `Connection failed (HTTP ${response.status})` : `连接失败（HTTP ${response.status}）`);
     }
-    const data = await response.json();
+    const data = response.data;
     usageRecorded = true;
     await reportModelUsage("connection_test", data.usage, true, next.model);
     if (!data.choices?.[0]) throw new Error(I18n.language === "en" ? "Incompatible API response" : "接口返回格式不兼容");
@@ -99,6 +117,7 @@ function renderUsage() {
   $("usageOutputTokens").textContent = formatNumber(stats.outputTokens || 0);
   const today = stats.daily?.[usageDateKey()] || {};
   $("usageToday").textContent = `${formatNumber(today.totalTokens || 0)} Token`;
+  $("usageEstimatedSaved").textContent = `${formatNumber(stats.estimatedInputTokensSaved || 0)} Token`;
   $("usageSuccess").textContent = `${formatNumber(stats.successful || 0)} / ${formatNumber(stats.failed || 0)}`;
   $("usageLastUsed").textContent = stats.lastUsedAt ? new Date(stats.lastUsedAt).toLocaleString(locale(), { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : t("暂无");
   const features = [
@@ -140,14 +159,18 @@ async function resetUsage() {
 }
 
 function renderCategories() {
-  $("categoryList").innerHTML = settings.categories.map((category, index) => `<span class="category-chip">${escapeHtml(categoryLabel(category))}<button data-index="${index}" title="${escapeHtml(t("删除"))}">×</button></span>`).join("");
+  $("categoryList").innerHTML = settings.categories.map((category, index) => {
+    const color = settings.categoryColors?.[category] || "#475569";
+    return `<span class="category-chip"><i class="category-color-dot" style="${escapeHtml(CategoryColors.cssVariables(color))}"></i>${escapeHtml(categoryLabel(category))}<button data-index="${index}" title="${escapeHtml(t("删除"))}">×</button></span>`;
+  }).join("");
 }
 
 function renderAiQueue() {
   const failed = bookmarksCache.filter(item => item.aiStatus === "failed").length;
   const pending = bookmarksCache.filter(item => item.aiStatus === "pending" || item.aiStatus === "processing").length;
   const incomplete = bookmarksCache.filter(item => !item.summary).length;
-  $("aiQueueSummary").textContent = I18n.language === "en" ? `Failed ${failed} · Processing/waiting ${pending} · Missing summary ${incomplete}` : `失败 ${failed} · 处理中/等待 ${pending} · 缺少摘要 ${incomplete}`;
+  const lowConfidence = bookmarksCache.filter(item => Number.isFinite(Number(item.aiConfidence)) && Number(item.aiConfidence) < Number(settings.lowConfidenceThreshold ?? 0.6)).length;
+  $("aiQueueSummary").textContent = I18n.language === "en" ? `Failed ${failed} · Processing/waiting ${pending} · Missing summary ${incomplete} · Low confidence ${lowConfidence}` : `失败 ${failed} · 处理中/等待 ${pending} · 缺少摘要 ${incomplete} · 低置信度 ${lowConfidence}`;
   $("retryAllAiBtn").disabled = !bookmarksCache.some(item => item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary);
 }
 
@@ -170,6 +193,144 @@ async function retryAllAi() {
   }
 }
 
+function flattenNativeBookmarks(nodes, path = [], result = []) {
+  for (const node of nodes || []) {
+    if (node.url && /^https?:/i.test(node.url)) {
+      result.push({
+        nativeBookmarkId: String(node.id), title: node.title || node.url, url: node.url,
+        folderPath: path.filter(Boolean).join(" / ")
+      });
+    }
+    if (node.children?.length) {
+      const nextPath = node.title ? [...path, node.title] : path;
+      flattenNativeBookmarks(node.children, nextPath, result);
+    }
+  }
+  return result;
+}
+
+async function scanNativeBookmarks() {
+  const button = $("scanNativeBookmarksBtn");
+  button.disabled = true;
+  button.textContent = l("正在扫描…", "Scanning…");
+  try {
+    const tree = await chrome.bookmarks.getTree();
+    const raw = flattenNativeBookmarks(tree);
+    const grouped = new Map();
+    for (const item of raw) {
+      const key = canonicalUrl(item.url);
+      const current = grouped.get(key) || {
+        title: item.title || item.url, url: item.url, nativeBookmarkIds: [], folderPath: item.folderPath
+      };
+      current.nativeBookmarkIds.push(item.nativeBookmarkId);
+      if (!current.folderPath && item.folderPath) current.folderPath = item.folderPath;
+      grouped.set(key, current);
+    }
+    const entries = [...grouped.values()].map(item => ({ ...item, nativeBookmarkIds: [...new Set(item.nativeBookmarkIds)] }));
+    const localByUrl = new Map(bookmarksCache.map(item => [canonicalUrl(item.url), item]));
+    const newCount = entries.filter(item => !localByUrl.has(canonicalUrl(item.url))).length;
+    const linkedCount = entries.length - newCount;
+    const organizeCount = entries.filter(item => {
+      const existing = localByUrl.get(canonicalUrl(item.url));
+      return !existing || !existing.summary || !(existing.tags || []).length;
+    }).length;
+    nativeBookmarkScan = {
+      entries, total: raw.length, unique: entries.length, newCount, linkedCount,
+      duplicates: Math.max(0, raw.length - entries.length), organizeCount
+    };
+    $("nativeTotalCount").textContent = formatNumber(raw.length);
+    $("nativeNewCount").textContent = formatNumber(newCount);
+    $("nativeLinkedCount").textContent = formatNumber(linkedCount);
+    $("nativeDuplicateCount").textContent = formatNumber(nativeBookmarkScan.duplicates);
+    const modelReady = Boolean(settings.apiUrl && settings.apiKey && settings.model);
+    $("nativeImportPreviewNote").textContent = I18n.language === "en"
+      ? `${entries.length} unique URLs found. AI organization will make about ${organizeCount} model calls. Public page text is fetched without cookies; duplicate URLs are merged.${modelReady ? "" : " Configure and save a model to enable AI organization."}`
+      : `共发现 ${entries.length} 个唯一网址。使用 AI 整理预计调用模型约 ${organizeCount} 次；公开页面会在不携带 Cookie 的情况下读取正文，重复网址会自动合并。${modelReady ? "" : " 请先配置并保存模型以启用 AI 整理。"}`;
+    $("nativeImportPreview").classList.remove("hidden");
+    $("nativeImportProgress").classList.add("hidden");
+    $("organizeNativeBtn").disabled = organizeCount === 0 || !modelReady;
+    $("importNativeOnlyBtn").disabled = entries.length === 0;
+    if (!entries.length) toast(l("没有发现可导入的网页书签", "No web bookmarks found"));
+  } catch (error) {
+    toast(error.message || l("扫描 Chrome 书签失败", "Failed to scan Chrome bookmarks"));
+  } finally {
+    button.disabled = false;
+    button.textContent = l("重新扫描", "Scan again");
+  }
+}
+
+async function startNativeBookmarkImport(organizeWithAI) {
+  if (!nativeBookmarkScan) await scanNativeBookmarks();
+  if (!nativeBookmarkScan?.entries.length) return;
+  if (organizeWithAI && (!settings.apiUrl || !settings.apiKey || !settings.model)) {
+    toast(l("请先完成模型配置", "Complete the model configuration first"));
+    return;
+  }
+  $("importNativeOnlyBtn").disabled = true;
+  $("organizeNativeBtn").disabled = true;
+  nativeImportJob = {
+    status: "importing", organizeWithAI, totalNative: nativeBookmarkScan.total,
+    imported: 0, linked: 0, total: nativeBookmarkScan.organizeCount, processed: 0, succeeded: 0, failed: 0
+  };
+  renderNativeImportJob();
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "import-native-bookmarks", entries: nativeBookmarkScan.entries, organizeWithAI
+    });
+    if (!response?.success) throw new Error(response?.error || l("Chrome 书签整理失败", "Chrome bookmark organization failed"));
+    nativeImportJob = response.job || nativeImportJob;
+    const data = await chrome.storage.local.get(["bookmarks", "nativeBookmarkImportJob"]);
+    bookmarksCache = data.bookmarks || [];
+    nativeImportJob = data.nativeBookmarkImportJob || nativeImportJob;
+    renderAiQueue();
+    renderNativeImportJob();
+  } catch (error) {
+    toast(error.message || l("Chrome 书签整理失败", "Chrome bookmark organization failed"));
+    const data = await chrome.storage.local.get("nativeBookmarkImportJob");
+    nativeImportJob = data.nativeBookmarkImportJob || { ...nativeImportJob, status: "failed", error: error.message };
+    renderNativeImportJob();
+  }
+}
+
+function renderNativeImportJob() {
+  if (!nativeImportJob) return;
+  const job = nativeImportJob;
+  const active = ["importing", "organizing"].includes(job.status);
+  const terminal = ["completed", "cancelled", "failed"].includes(job.status);
+  $("nativeImportPreview").classList.add("hidden");
+  $("nativeImportProgress").classList.remove("hidden");
+  const total = Number(job.total || 0);
+  const processed = Number(job.processed || 0);
+  const percent = job.status === "completed" ? 100 : job.status === "importing" ? 4 : total ? Math.min(100, Math.round(processed / total * 100)) : 100;
+  const titles = {
+    importing: l("正在导入并关联 Chrome 书签", "Importing and linking Chrome bookmarks"),
+    organizing: l("正在使用 AI 整理 Chrome 书签", "Organizing Chrome bookmarks with AI"),
+    completed: l("Chrome 书签整理完成", "Chrome bookmark organization complete"),
+    cancelled: l("任务已停止", "Task stopped"),
+    failed: l("Chrome 书签整理失败", "Chrome bookmark organization failed")
+  };
+  $("nativeProgressTitle").textContent = titles[job.status] || titles.importing;
+  $("nativeProgressCurrent").textContent = job.error || job.currentTitle || (terminal ? l("可以通过安全快照恢复操作前的数据", "Use the safety snapshot to restore data from before this operation") : "");
+  $("nativeProgressPercent").textContent = `${percent}%`;
+  $("nativeProgressBar").style.width = `${percent}%`;
+  $("nativeProgressMeta").textContent = I18n.language === "en"
+    ? `Imported ${job.imported || 0} · Linked ${job.linked || 0} · AI ${processed}/${total} · Succeeded ${job.succeeded || 0} · Failed ${job.failed || 0}`
+    : `新增 ${job.imported || 0} · 关联 ${job.linked || 0} · AI 进度 ${processed}/${total} · 成功 ${job.succeeded || 0} · 失败 ${job.failed || 0}`;
+  $("cancelNativeImportBtn").classList.toggle("hidden", !active);
+  $("cancelNativeImportBtn").disabled = Boolean(job.cancelRequested);
+  $("scanNativeBookmarksBtn").disabled = active;
+  if (terminal) {
+    $("scanNativeBookmarksBtn").textContent = l("重新扫描", "Scan again");
+    $("scanNativeBookmarksBtn").disabled = false;
+  }
+}
+
+async function cancelNativeBookmarkImport() {
+  $("cancelNativeImportBtn").disabled = true;
+  await chrome.runtime.sendMessage({ type: "cancel-native-bookmark-import" });
+  toast(l("将在当前网址处理完成后停止", "The task will stop after the current bookmark"));
+}
+
 async function persistCategories() { await chrome.storage.local.set({ settings: readForm() }); }
 
 async function addCategory() {
@@ -177,7 +338,9 @@ async function addCategory() {
   const value = input.value.trim();
   if (!value) return;
   if (settings.categories.includes(value)) return toast("这个分类已经存在");
-  settings.categories.push(value); input.value = ""; renderCategories(); await persistCategories();
+  settings.categories.push(value);
+  settings.categoryColors = CategoryColors.ensure(settings.categories, settings.categoryColors || {}).colors;
+  input.value = ""; renderCategories(); await persistCategories();
 }
 
 async function removeCategory(index) {
@@ -196,6 +359,7 @@ async function removeCategory(index) {
   }
   await createSafetySnapshot("delete-category");
   settings.categories.splice(index, 1);
+  settings.categoryColors = CategoryColors.ensure(settings.categories, settings.categoryColors || {}).colors;
   if (target) bookmarksCache = bookmarksCache.map(item => item.category === category ? { ...item, category: target, updatedAt: new Date().toISOString() } : item);
   if (target) recycleBinCache = recycleBinCache.map(item => item.bookmark?.category === category ? { ...item, bookmark: { ...item.bookmark, category: target, updatedAt: new Date().toISOString() } } : item);
   await chrome.storage.local.set({ settings: readForm(), bookmarks: bookmarksCache, recycleBin: recycleBinCache });
@@ -276,21 +440,6 @@ function closeImportPreview() {
   $("importInput").value = "";
 }
 
-function canonicalUrl(value = "") {
-  try {
-    const url = new URL(value);
-    url.protocol = "https:";
-    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    url.port = "";
-    url.hash = "";
-    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
-    const tracking = /^(utm_[a-z]+|fbclid|gclid|yclid|mc_[a-z]+|ref|referrer|source)$/i;
-    [...url.searchParams.keys()].forEach(key => { if (tracking.test(key)) url.searchParams.delete(key); });
-    url.searchParams.sort();
-    return url.toString();
-  } catch { return String(value).replace(/#.*$/, "").replace(/\/+$/, ""); }
-}
-
 function sanitizeSettings(value = {}) {
   const next = { ...value };
   delete next.enableAds;
@@ -353,8 +502,6 @@ async function clearBookmarksSafely() {
   toast("所有收藏已移入回收站");
 }
 
-function normalizeEndpoint(url) { const clean = url.trim().replace(/\/$/, ""); if (/\/chat\/completions$/i.test(clean)) return clean; return /\/v1$/i.test(clean) ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`; }
-function escapeHtml(value="") { return String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function toast(message) { const el=$("toast"); el.textContent=t(message); el.classList.add("show"); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove("show"),2200); }
 
 async function changeLanguage() {
@@ -369,9 +516,15 @@ $("saveBtn").addEventListener("click", saveSettings);
 $("testBtn").addEventListener("click", testConnection);
 $("autoClassifyOnSave").addEventListener("change", persistBehavior);
 $("autoDeleteWithNative").addEventListener("change", persistBehavior);
+$("autoReclassifyLowConfidenceOnOpen").addEventListener("change", persistBehavior);
+$("lowConfidenceThreshold").addEventListener("change", persistBehavior);
 $("refreshUsageBtn").addEventListener("click", refreshUsage);
 $("resetUsageBtn").addEventListener("click", resetUsage);
 $("retryAllAiBtn").addEventListener("click", retryAllAi);
+$("scanNativeBookmarksBtn").addEventListener("click", scanNativeBookmarks);
+$("importNativeOnlyBtn").addEventListener("click", () => startNativeBookmarkImport(false));
+$("organizeNativeBtn").addEventListener("click", () => startNativeBookmarkImport(true));
+$("cancelNativeImportBtn").addEventListener("click", cancelNativeBookmarkImport);
 $("addCategory").addEventListener("click", addCategory);
 $("newCategory").addEventListener("keydown", e => { if(e.key==="Enter") addCategory(); });
 $("categoryList").addEventListener("click", e => { const button=e.target.closest("button[data-index]"); if(button) removeCategory(Number(button.dataset.index)); });
@@ -392,5 +545,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     renderAiQueue();
   }
   if (area === "local" && changes.recycleBin) recycleBinCache = Array.isArray(changes.recycleBin.newValue) ? changes.recycleBin.newValue : [];
+  if (area === "local" && changes.nativeBookmarkImportJob) {
+    nativeImportJob = changes.nativeBookmarkImportJob.newValue || null;
+    renderNativeImportJob();
+  }
 });
 init();

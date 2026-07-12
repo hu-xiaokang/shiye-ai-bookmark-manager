@@ -84,6 +84,7 @@
       "输入 Token": "Input tokens",
       "输出 Token": "Output tokens",
       "今日": "Today",
+      "估算节省": "Estimated saved",
       "成功/失败": "Success / failure",
       "最后调用": "Last used",
       "暂无": "None",
@@ -187,6 +188,28 @@
       ,"未找到这条收藏": "Bookmark not found"
       ,"已同时移至拾页回收站": "Also moved to ShiYe trash"
       ,"已在拾页保留": "Kept in ShiYe"
+      ,"书签整理": "Bookmark organizer"
+      ,"一键整理 Chrome 书签": "Organize Chrome bookmarks"
+      ,"扫描现有原生书签，去重后批量生成分类、标签和摘要": "Scan existing Chrome bookmarks, remove duplicates, and generate categories, tags, and summaries"
+      ,"开始扫描": "Start scan"
+      ,"不会直接修改 Chrome 原生书签": "Chrome bookmarks will not be modified"
+      ,"导入前会建立安全快照；重复网址只建立关联，不会生成重复收藏。": "A safety snapshot is created first. Duplicate URLs are linked instead of creating duplicate bookmarks."
+      ,"原生书签": "Chrome bookmarks"
+      ,"新增收藏": "New bookmarks"
+      ,"已有收藏": "Existing bookmarks"
+      ,"重复网址": "Duplicate URLs"
+      ,"仅导入并关联": "Import and link only"
+      ,"导入并使用 AI 整理": "Import and organize with AI"
+      ,"正在整理 Chrome 书签": "Organizing Chrome bookmarks"
+      ,"停止任务": "Stop task"
+      ,"重新扫描": "Scan again"
+      ,"正在扫描…": "Scanning…"
+      ,"打开低置信度网页时自动重新整理": "Reorganize low-confidence bookmarks when opened"
+      ,"当网页正文可读取时重新生成分类、标签和摘要；每条收藏最多自动复核一次": "Regenerate the category, tags, and summary when page content becomes available; each bookmark is reviewed automatically at most once"
+      ,"低置信度阈值": "Low-confidence threshold"
+      ,"低于 50%": "Below 50%"
+      ,"低于 60%": "Below 60%"
+      ,"低于 70%": "Below 70%"
     }
   };
 

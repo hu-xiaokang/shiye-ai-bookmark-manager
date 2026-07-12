@@ -1,13 +1,21 @@
+importScripts("model-utils.js", "app-utils.js", "ai-client.js", "page-content.js");
+
+const { canonicalUrl, parseModelJson } = AppUtils;
+const { extractPageContext } = PageContent;
+
 const DEFAULT_CATEGORY = "稍后阅读";
 const ACTIVE_SESSIONS_KEY = "activeBrowsingSessions";
 const METRICS_KEY = "browsingMetrics";
 const PENDING_DELETIONS_KEY = "pendingNativeDeletions";
 const MODEL_USAGE_KEY = "modelUsage";
 const RECYCLE_BIN_KEY = "recycleBin";
+const NATIVE_IMPORT_JOB_KEY = "nativeBookmarkImportJob";
 const MIN_SESSION_MS = 3_000;
 const MAX_SESSION_MS = 4 * 60 * 60 * 1_000;
 let bookmarkSyncQueue = Promise.resolve();
 let modelUsageQueue = Promise.resolve();
+let nativeImportRunning = false;
+const confidenceReprocessQueue = new Set();
 
 function useEnglish(settings = {}) {
   if (settings.language === "en") return true;
@@ -30,7 +38,7 @@ function enqueueBookmarkSync(task) {
 }
 
 function emptyUsageBucket() {
-  return { requests: 0, successful: 0, failed: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  return { requests: 0, successful: 0, failed: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedInputTokensSaved: 0 };
 }
 
 function normalizeTokenUsage(usage = {}) {
@@ -47,8 +55,8 @@ function usageDateKey(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-function addUsage(bucket, tokens, success) {
-  for (const key of ["requests", "successful", "failed", "inputTokens", "outputTokens", "totalTokens"]) {
+function addUsage(bucket, tokens, success, estimatedSaved = 0) {
+  for (const key of ["requests", "successful", "failed", "inputTokens", "outputTokens", "totalTokens", "estimatedInputTokensSaved"]) {
     bucket[key] = Number(bucket[key]) || 0;
   }
   bucket.requests += 1;
@@ -57,6 +65,7 @@ function addUsage(bucket, tokens, success) {
   bucket.inputTokens += tokens.inputTokens;
   bucket.outputTokens += tokens.outputTokens;
   bucket.totalTokens += tokens.totalTokens;
+  bucket.estimatedInputTokensSaved += estimatedSaved;
 }
 
 function recordModelUsage(entry = {}) {
@@ -70,6 +79,7 @@ function recordModelUsage(entry = {}) {
     const model = String(entry.model || "未指定模型").slice(0, 100);
     const success = entry.success !== false;
     const tokens = normalizeTokenUsage(entry.usage);
+    const estimatedSaved = Math.max(0, Number(entry.optimization?.originalTokens || 0) - Number(entry.optimization?.sentTokens || 0));
     const dayKey = usageDateKey();
     stats.byFeature ||= {};
     stats.byModel ||= {};
@@ -77,10 +87,10 @@ function recordModelUsage(entry = {}) {
     stats.byFeature[feature] ||= emptyUsageBucket();
     stats.byModel[model] ||= emptyUsageBucket();
     stats.daily[dayKey] ||= emptyUsageBucket();
-    addUsage(stats, tokens, success);
-    addUsage(stats.byFeature[feature], tokens, success);
-    addUsage(stats.byModel[model], tokens, success);
-    addUsage(stats.daily[dayKey], tokens, success);
+    addUsage(stats, tokens, success, estimatedSaved);
+    addUsage(stats.byFeature[feature], tokens, success, estimatedSaved);
+    addUsage(stats.byModel[model], tokens, success, estimatedSaved);
+    addUsage(stats.daily[dayKey], tokens, success, estimatedSaved);
     stats.lastUsedAt = new Date().toISOString();
 
     const dailyKeys = Object.keys(stats.daily).sort().reverse();
@@ -94,60 +104,33 @@ function isTrackableUrl(url = "") {
   return /^https?:/i.test(url);
 }
 
-function canonicalUrl(value = "") {
-  try {
-    const url = new URL(value);
-    url.protocol = "https:";
-    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    url.port = "";
-    url.hash = "";
-    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
-    const tracking = /^(utm_[a-z]+|fbclid|gclid|yclid|mc_[a-z]+|ref|referrer|source)$/i;
-    [...url.searchParams.keys()].forEach(key => { if (tracking.test(key)) url.searchParams.delete(key); });
-    url.searchParams.sort();
-    return url.toString();
-  } catch {
-    return String(value).replace(/#.*$/, "").replace(/\/+$/, "");
+function confidenceLevel(score) {
+  return score < 0.6 ? "low" : score < 0.8 ? "medium" : "high";
+}
+
+function evaluateClassificationConfidence(result = {}, pageContext = {}, categoryRecognized = true) {
+  let modelScore = Number(result.confidence);
+  if (modelScore > 1 && modelScore <= 100) modelScore /= 100;
+  if (!Number.isFinite(modelScore)) {
+    modelScore = pageContext.source === "open-tab" ? 0.84 : pageContext.source === "public-fetch" ? 0.7 : 0.42;
   }
+  let score = Math.max(0, Math.min(1, modelScore));
+  const contentLength = String(pageContext.content || "").length;
+  if (pageContext.source === "title-url") score = Math.min(score, 0.5);
+  if (pageContext.source === "public-fetch") score = Math.min(score, 0.82);
+  if (contentLength > 1500) score = Math.min(0.98, score + 0.04);
+  else if (contentLength > 0 && contentLength < 200) score = Math.min(score, 0.58);
+  if (!categoryRecognized) score = Math.min(score, 0.35);
+  if (!String(result.summary || "").trim() || !Array.isArray(result.tags) || !result.tags.length) score = Math.min(score, 0.55);
+  score = Math.round(score * 100) / 100;
+  return {
+    score, level: confidenceLevel(score),
+    reason: String(result.confidenceReason || "").trim().slice(0, 240),
+    source: pageContext.source || "title-url"
+  };
 }
 
-function normalizeEndpoint(value = "") {
-  const clean = value.trim().replace(/\/$/, "");
-  if (/\/chat\/completions$/i.test(clean)) return clean;
-  if (/\/v1$/i.test(clean)) return `${clean}/chat/completions`;
-  return `${clean}/v1/chat/completions`;
-}
-
-function parseModelJson(content = "") {
-  const cleaned = String(content).replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : null;
-}
-
-async function extractOpenPageContent(url) {
-  try {
-    const tabs = await chrome.tabs.query({});
-    const tab = tabs.find(item => item.id && canonicalUrl(item.url) === canonicalUrl(url));
-    if (!tab) return "";
-    const [{ result = "" } = {}] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const meta = document.querySelector('meta[name="description"], meta[property="og:description"]')?.content || "";
-        const source = document.querySelector("article, main, [role='main']") || document.body;
-        if (!source) return meta;
-        const copy = source.cloneNode(true);
-        copy.querySelectorAll("script, style, noscript, svg, canvas, iframe, nav, header, footer, aside, form, button").forEach(node => node.remove());
-        const text = (copy.innerText || copy.textContent || "").replace(/\s+/g, " ").trim();
-        return [meta, text].filter(Boolean).join("\n").slice(0, 10000);
-      }
-    });
-    return result;
-  } catch {
-    return "";
-  }
-}
-
-async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
+async function autoClassifyBookmark(pluginBookmarkId, settings, force = false, trigger = "auto", providedPageContext = null) {
   const english = useEnglish(settings);
   if ((!force && settings?.autoClassifyOnSave === false) || !settings?.apiUrl || !settings?.apiKey || !settings?.model) {
     await updateBookmarkAiState(pluginBookmarkId, "idle", english ? (!force && settings?.autoClassifyOnSave === false ? "Automatic processing is disabled" : "Configure a model first") : (!force && settings?.autoClassifyOnSave === false ? "自动整理已关闭" : "请先配置模型"));
@@ -158,52 +141,69 @@ async function autoClassifyBookmark(pluginBookmarkId, settings, force = false) {
   if (!bookmark) return { success: false, error: english ? "Bookmark not found" : "收藏不存在" };
   await updateBookmarkAiState(pluginBookmarkId, "processing", "");
   let usageRecorded = false;
+  let inputOptimization = null;
   try {
     const categories = settings.categories?.length ? settings.categories : [DEFAULT_CATEGORY];
-    const pageContent = await extractOpenPageContent(bookmark.url);
-    const response = await fetch(normalizeEndpoint(settings.apiUrl), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${settings.apiKey}` },
-      body: JSON.stringify({
-        model: settings.model,
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: english
-            ? `You organize web bookmarks. Select exactly one category identifier from the candidates and generate 2-4 short English tags and a concise 40-90 word English summary. Return JSON only: {"category":"exact identifier","tags":["tag"],"summary":"summary"}. Candidates: ${categories.join(", ")}`
-            : `你是网址收藏整理助手。请从候选分类中选择一项，并生成2-4个简短中文标签和60-120字中文摘要。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
-          { role: "user", content: english ? `Title: ${bookmark.title}\nURL: ${bookmark.url}\nPage content:\n${pageContent || "Page content is unavailable. Infer from the title and URL."}` : `标题：${bookmark.title}\n网址：${bookmark.url}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
-        ]
+    const pageContext = providedPageContext || await extractPageContext(bookmark.url);
+    const compactedContent = ModelText.compactPageContent(pageContext.content, 2600);
+    const pageContent = compactedContent.text;
+    const compactTitle = ModelText.compactField(bookmark.title, 400);
+    const compactUrl = ModelText.compactField(bookmark.url, 1200);
+    inputOptimization = { originalTokens: compactedContent.originalTokens, sentTokens: compactedContent.estimatedTokens };
+    const requestBody = AiClient.buildRequest({
+      model: settings.model,
+      maxOutputTokens: 320,
+      messages: AiClient.classificationMessages({
+        english,
+        candidateText: categories.join(english ? ", " : "、"),
+        title: compactTitle,
+        url: compactUrl,
+        pageContent
       })
     });
+    const response = await AiClient.request({ apiUrl: settings.apiUrl, apiKey: settings.apiKey, body: requestBody });
     if (!response.ok) {
       usageRecorded = true;
-      await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false });
+      await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false, optimization: inputOptimization });
       const message = english ? `Model request failed (${response.status})` : `模型请求失败（${response.status}）`;
       await updateBookmarkAiState(pluginBookmarkId, "failed", message, true);
       return { success: false, error: message };
     }
-    const payload = await response.json();
+    const payload = response.data;
     usageRecorded = true;
-    await recordModelUsage({ feature: "auto_classification", model: settings.model, success: true, usage: payload.usage });
-    const result = parseModelJson(payload.choices?.[0]?.message?.content);
+    await recordModelUsage({ feature: "auto_classification", model: settings.model, success: true, usage: payload.usage, optimization: inputOptimization });
+    const result = parseModelJson(response.content);
     if (!result) throw new Error(english ? "Could not parse the model response" : "模型返回内容无法识别");
 
     const latest = await chrome.storage.local.get("bookmarks");
     const bookmarks = latest.bookmarks || [];
     const target = bookmarks.find(item => item.id === pluginBookmarkId);
     if (!target) return;
-    target.category = categories.includes(result.category) ? result.category : DEFAULT_CATEGORY;
+    const categoryRecognized = categories.includes(result.category);
+    const confidence = evaluateClassificationConfidence(result, pageContext, categoryRecognized);
+    target.category = categoryRecognized ? result.category : DEFAULT_CATEGORY;
     target.tags = Array.isArray(result.tags) ? result.tags.slice(0, 4).map(String) : [];
     target.summary = String(result.summary || "").trim();
     target.aiStatus = "completed";
     target.aiError = "";
     target.aiRetryCount = Number(target.aiRetryCount || 0);
+    target.aiConfidence = confidence.score;
+    target.aiConfidenceLevel = confidence.level;
+    target.aiConfidenceReason = confidence.reason;
+    target.aiContentSource = confidence.source;
+    target.aiContentLength = String(pageContext.content || "").length;
+    target.aiContentFingerprint = ModelText.fingerprint(pageContext.content || "");
+    target.aiInputEstimatedTokens = compactedContent.estimatedTokens;
+    target.aiInputOriginalEstimatedTokens = compactedContent.originalTokens;
+    target.aiConfidenceAssessedAt = new Date().toISOString();
+    target.confidenceReprocessPending = false;
+    if (trigger === "confidence-reprocess") target.confidenceReprocessedAt = new Date().toISOString();
     target.autoClassifiedAt = new Date().toISOString();
     target.updatedAt = target.autoClassifiedAt;
     await chrome.storage.local.set({ bookmarks });
-    return { success: true };
+    return { success: true, confidence };
   } catch (error) {
-    if (!usageRecorded) await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false });
+    if (!usageRecorded) await recordModelUsage({ feature: "auto_classification", model: settings.model, success: false, optimization: inputOptimization });
     const message = String(error?.message || (english ? "AI processing failed" : "AI 整理失败")).slice(0, 160);
     await updateBookmarkAiState(pluginBookmarkId, "failed", message, true);
     return { success: false, error: message };
@@ -218,6 +218,7 @@ async function updateBookmarkAiState(bookmarkId, status, error = "", increaseRet
   bookmark.aiStatus = status;
   bookmark.aiError = error;
   if (increaseRetry) bookmark.aiRetryCount = Number(bookmark.aiRetryCount || 0) + 1;
+  if (status === "failed") bookmark.confidenceReprocessPending = false;
   bookmark.aiUpdatedAt = new Date().toISOString();
   if (status === "failed" && increaseRetry && bookmark.aiRetryCount <= 2) {
     const delayInMinutes = bookmark.aiRetryCount === 1 ? 1 : 5;
@@ -238,6 +239,41 @@ async function resetBookmarkAiRetries(bookmarkId) {
   bookmark.aiRetryCount = 0;
   bookmark.aiNextRetryAt = null;
   await chrome.storage.local.set({ bookmarks });
+}
+
+async function maybeReclassifyLowConfidence(tab) {
+  if (!tab?.id || !tab.active || tab.status !== "complete" || !isTrackableUrl(tab.url)) return { triggered: false };
+  const data = await chrome.storage.local.get(["bookmarks", "settings"]);
+  const settings = data.settings || {};
+  if ((settings.autoReclassifyLowConfidenceOnOpen ?? true) === false) return { triggered: false };
+  if (!settings.apiUrl || !settings.apiKey || !settings.model) return { triggered: false };
+  const threshold = Math.max(0.4, Math.min(0.8, Number(settings.lowConfidenceThreshold ?? 0.6)));
+  const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
+  const bookmark = bookmarks.find(item => canonicalUrl(item.url) === canonicalUrl(tab.url));
+  if (!bookmark || !Number.isFinite(Number(bookmark.aiConfidence))) return { triggered: false };
+  if (Number(bookmark.aiConfidence) >= threshold || bookmark.aiContentSource === "open-tab") return { triggered: false };
+  if (bookmark.confidenceReprocessPending || Number(bookmark.confidenceReprocessCount || 0) >= 1) return { triggered: false };
+  if (["pending", "processing"].includes(bookmark.aiStatus) || confidenceReprocessQueue.has(bookmark.id)) return { triggered: false };
+
+  confidenceReprocessQueue.add(bookmark.id);
+  try {
+    const pageContext = await extractPageContext(bookmark.url);
+    if (pageContext.source !== "open-tab" || String(pageContext.content || "").length < 250) return { triggered: false };
+    const nextFingerprint = ModelText.fingerprint(pageContext.content);
+    const previousLength = Number(bookmark.aiContentLength || 0);
+    const materiallyRicher = bookmark.aiContentSource === "title-url"
+      || String(pageContext.content).length >= Math.max(300, previousLength * 1.1)
+      || (nextFingerprint !== bookmark.aiContentFingerprint && String(pageContext.content).length >= 500);
+    if (!materiallyRicher) return { triggered: false };
+    bookmark.confidenceReprocessPending = true;
+    bookmark.confidenceReprocessCount = Number(bookmark.confidenceReprocessCount || 0) + 1;
+    bookmark.confidenceReprocessTriggeredAt = new Date().toISOString();
+    await chrome.storage.local.set({ bookmarks });
+    const result = await autoClassifyBookmark(bookmark.id, settings, true, "confidence-reprocess", pageContext);
+    return { triggered: true, success: Boolean(result?.success), result };
+  } finally {
+    confidenceReprocessQueue.delete(bookmark.id);
+  }
 }
 
 async function syncNativeBookmark(id, node) {
@@ -432,6 +468,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     retryAllAiTasks().then(sendResponse).catch(error => sendResponse({ success: false, error: error.message || "批量处理失败" }));
     return true;
   }
+  if (message?.type === "import-native-bookmarks") {
+    runNativeBookmarkImport(message.entries || [], Boolean(message.organizeWithAI))
+      .then(sendResponse)
+      .catch(error => sendResponse({ success: false, error: error.message || "Chrome 书签整理失败" }));
+    return true;
+  }
+  if (message?.type === "cancel-native-bookmark-import") {
+    chrome.storage.local.get(NATIVE_IMPORT_JOB_KEY).then(data => {
+      const job = data[NATIVE_IMPORT_JOB_KEY];
+      if (job && ["importing", "organizing"].includes(job.status)) {
+        job.cancelRequested = true;
+        if (!nativeImportRunning) {
+          job.status = "cancelled";
+          job.completedAt = new Date().toISOString();
+        }
+        job.updatedAt = new Date().toISOString();
+        return chrome.storage.local.set({ [NATIVE_IMPORT_JOB_KEY]: job });
+      }
+    }).then(() => sendResponse({ success: true })).catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {
@@ -449,6 +506,129 @@ async function retryAllAiTasks() {
     if (result?.success) completed += 1;
   }
   return { success: true, total: candidates.length, completed };
+}
+
+async function updateNativeImportJob(patch) {
+  const data = await chrome.storage.local.get(NATIVE_IMPORT_JOB_KEY);
+  const current = data[NATIVE_IMPORT_JOB_KEY] || {};
+  const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
+  await chrome.storage.local.set({ [NATIVE_IMPORT_JOB_KEY]: next });
+  return next;
+}
+
+async function runNativeBookmarkImport(rawEntries, organizeWithAI) {
+  if (nativeImportRunning) return { success: false, error: "已有 Chrome 书签整理任务正在运行" };
+  nativeImportRunning = true;
+  const jobId = crypto.randomUUID();
+  const startedAt = new Date().toISOString();
+  try {
+    const grouped = new Map();
+    for (const entry of Array.isArray(rawEntries) ? rawEntries.slice(0, 20_000) : []) {
+      if (!isTrackableUrl(entry?.url)) continue;
+      const key = canonicalUrl(entry.url);
+      const current = grouped.get(key) || {
+        title: String(entry.title || entry.url).slice(0, 500), url: entry.url,
+        nativeBookmarkIds: [], sourceFolders: []
+      };
+      current.nativeBookmarkIds.push(...(Array.isArray(entry.nativeBookmarkIds) ? entry.nativeBookmarkIds : [entry.nativeBookmarkId]).filter(Boolean).map(String));
+      if (entry.folderPath) current.sourceFolders.push(String(entry.folderPath).slice(0, 500));
+      grouped.set(key, current);
+    }
+    const entries = [...grouped.values()].map(entry => ({
+      ...entry,
+      nativeBookmarkIds: [...new Set(entry.nativeBookmarkIds)],
+      sourceFolders: [...new Set(entry.sourceFolders)]
+    }));
+    const nativeCount = entries.reduce((sum, entry) => sum + entry.nativeBookmarkIds.length, 0);
+    const data = await chrome.storage.local.get(["bookmarks", "settings", "modelUsage", RECYCLE_BIN_KEY, NATIVE_IMPORT_JOB_KEY]);
+    const previousJob = data[NATIVE_IMPORT_JOB_KEY];
+    if (previousJob && ["importing", "organizing"].includes(previousJob.status)) {
+      const age = Date.now() - new Date(previousJob.updatedAt || previousJob.startedAt || 0).getTime();
+      if (Number.isFinite(age) && age < 10 * 60_000) return { success: false, error: "已有 Chrome 书签整理任务正在运行" };
+    }
+    const settings = data.settings || {};
+    if (organizeWithAI && (!settings.apiUrl || !settings.apiKey || !settings.model)) {
+      return { success: false, error: useEnglish(settings) ? "Configure the model before AI organization" : "请先完成模型配置再进行 AI 整理" };
+    }
+    const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
+    await chrome.storage.local.set({
+      lastSafetyBackup: {
+        version: 2, reason: "before-native-bookmark-import", createdAt: startedAt,
+        bookmarks: structuredClone(bookmarks), settings: data.settings || {},
+        recycleBin: data[RECYCLE_BIN_KEY] || [], modelUsage: data.modelUsage || {}
+      },
+      [NATIVE_IMPORT_JOB_KEY]: {
+        id: jobId, status: "importing", organizeWithAI, totalNative: nativeCount,
+        uniqueUrls: entries.length, duplicates: Math.max(0, nativeCount - entries.length),
+        imported: 0, linked: 0, total: 0, processed: 0, succeeded: 0, failed: 0,
+        cancelRequested: false, startedAt, updatedAt: startedAt
+      }
+    });
+
+    const byUrl = new Map(bookmarks.map(bookmark => [canonicalUrl(bookmark.url), bookmark]));
+    const candidates = [];
+    let imported = 0;
+    let linked = 0;
+    for (const entry of entries) {
+      const key = canonicalUrl(entry.url);
+      const existing = byUrl.get(key);
+      if (existing) {
+        existing.nativeBookmarkIds = [...new Set([...(existing.nativeBookmarkIds || []), ...entry.nativeBookmarkIds])];
+        existing.nativeBookmarkId = existing.nativeBookmarkIds[0] || existing.nativeBookmarkId || null;
+        existing.sourceFolders = [...new Set([...(existing.sourceFolders || []), ...entry.sourceFolders])];
+        existing.updatedAt = new Date().toISOString();
+        linked += 1;
+        if (organizeWithAI && (!existing.summary || !(existing.tags || []).length)) candidates.push(existing.id);
+        continue;
+      }
+      const created = {
+        id: crypto.randomUUID(), title: entry.title || entry.url, url: entry.url,
+        category: DEFAULT_CATEGORY, tags: [], summary: "",
+        aiStatus: organizeWithAI ? "pending" : "idle", aiError: "",
+        source: "chrome-bookmark-import", sourceFolders: entry.sourceFolders,
+        nativeBookmarkId: entry.nativeBookmarkIds[0] || null,
+        nativeBookmarkIds: entry.nativeBookmarkIds,
+        createdAt: new Date().toISOString()
+      };
+      bookmarks.unshift(created);
+      byUrl.set(key, created);
+      imported += 1;
+      if (organizeWithAI) candidates.push(created.id);
+    }
+    await chrome.storage.local.set({ bookmarks });
+    let job = await updateNativeImportJob({
+      status: organizeWithAI && candidates.length ? "organizing" : "completed",
+      imported, linked, total: candidates.length,
+      completedAt: organizeWithAI && candidates.length ? null : new Date().toISOString()
+    });
+    if (!organizeWithAI || !candidates.length) return { success: true, job };
+
+    let processed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    for (const bookmarkId of candidates) {
+      job = (await chrome.storage.local.get(NATIVE_IMPORT_JOB_KEY))[NATIVE_IMPORT_JOB_KEY] || job;
+      if (job.cancelRequested) {
+        job = await updateNativeImportJob({ status: "cancelled", processed, succeeded, failed, completedAt: new Date().toISOString() });
+        return { success: true, cancelled: true, job };
+      }
+      const latest = await chrome.storage.local.get("bookmarks");
+      const target = (latest.bookmarks || []).find(item => item.id === bookmarkId);
+      await updateNativeImportJob({ currentTitle: target?.title || target?.url || "", processed, succeeded, failed });
+      const result = await autoClassifyBookmark(bookmarkId, settings, true);
+      processed += 1;
+      if (result?.success) succeeded += 1;
+      else failed += 1;
+      await updateNativeImportJob({ processed, succeeded, failed });
+    }
+    job = await updateNativeImportJob({ status: "completed", currentTitle: "", processed, succeeded, failed, completedAt: new Date().toISOString() });
+    return { success: true, job };
+  } catch (error) {
+    await updateNativeImportJob({ status: "failed", error: String(error?.message || error), completedAt: new Date().toISOString() }).catch(() => {});
+    return { success: false, error: String(error?.message || error) };
+  } finally {
+    nativeImportRunning = false;
+  }
 }
 
 async function purgeRecycleBin() {
@@ -477,11 +657,16 @@ async function cleanupLegacyAdData() {
 }
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  try { await startSession(await chrome.tabs.get(tabId)); } catch {}
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await startSession(tab);
+    if (tab.status === "complete") setTimeout(() => maybeReclassifyLowConfidence(tab).catch(() => {}), 800);
+  } catch {}
 });
 
 chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   if (tab.active && (changeInfo.url || changeInfo.status === "complete")) await startSession(tab);
+  if (tab.active && changeInfo.status === "complete") setTimeout(() => maybeReclassifyLowConfidence(tab).catch(() => {}), 1200);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId, { windowId }) => {
