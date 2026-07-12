@@ -1,9 +1,10 @@
 const DEFAULT_CATEGORIES = ["稍后阅读", "工作效率", "技术开发", "设计灵感", "学习资料", "生活兴趣", "新闻资讯", "工具服务"];
+const { canonicalUrl, isWebUrl, parseModelJson, escapeHtml } = AppUtils;
 const state = {
   bookmarks: [], settings: {}, currentUrl: "", currentTabId: null, currentCategory: "稍后阅读",
-  currentTags: [], currentSummary: "", activeFilter: "全部", search: "",
+  currentTags: [], currentSummary: "", currentConfidence: null, currentConfidenceReason: "", currentContentSource: "", currentContentLength: 0, currentContentFingerprint: "", currentInputTokens: 0, currentOriginalInputTokens: 0, activeFilter: "全部", search: "",
   commonSites: [], recentSites: [], visibleItems: [], layoutHeight: 575, pendingNativeDeletions: [],
-  editingBookmarkId: null, recycleBin: [], pendingDuplicate: null, undoAction: null
+  editingBookmarkId: null, recycleBin: [], pendingDuplicate: null, undoAction: null, categoryColors: {}
 };
 
 const $ = (id) => document.getElementById(id);
@@ -41,6 +42,8 @@ async function init() {
   await I18n.init(state.settings);
   state.pendingNativeDeletions = Array.isArray(data.pendingNativeDeletions) ? data.pendingNativeDeletions : [];
   const categories = [...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+  const storedColors = state.settings.categoryColorVersion === CategoryColors.VERSION ? state.settings.categoryColors || {} : {};
+  state.categoryColors = CategoryColors.ensure(categories, storedColors).colors;
   els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(categoryLabel(c))}</option>`).join("");
   updateModelStatus();
   resetCaptureForm();
@@ -115,6 +118,13 @@ async function loadCurrentTab() {
     els.category.value = existing.category || "稍后阅读";
     state.currentTags = existing.tags || [];
     state.currentSummary = existing.summary || "";
+    state.currentConfidence = Number.isFinite(Number(existing.aiConfidence)) ? Number(existing.aiConfidence) : null;
+    state.currentConfidenceReason = existing.aiConfidenceReason || "";
+    state.currentContentSource = existing.aiContentSource || "";
+    state.currentContentLength = Number(existing.aiContentLength || 0);
+    state.currentContentFingerprint = existing.aiContentFingerprint || "";
+    state.currentInputTokens = Number(existing.aiInputEstimatedTokens || 0);
+    state.currentOriginalInputTokens = Number(existing.aiInputOriginalEstimatedTokens || 0);
     els.summary.value = state.currentSummary;
     els.tags.value = state.currentTags.join("，");
     showAiResult();
@@ -127,6 +137,13 @@ function resetCaptureForm() {
   state.currentTabId = null;
   state.currentTags = [];
   state.currentSummary = "";
+  state.currentConfidence = null;
+  state.currentConfidenceReason = "";
+  state.currentContentSource = "";
+  state.currentContentLength = 0;
+  state.currentContentFingerprint = "";
+  state.currentInputTokens = 0;
+  state.currentOriginalInputTokens = 0;
   els.captureEyebrow.textContent = t("新建收藏");
   els.captureTitle.textContent = t("收藏当前网页");
   els.title.value = "";
@@ -153,6 +170,7 @@ function updateModelStatus() {
 function render() {
   const activityViews = ["常用网址", "最近浏览"];
   const bookmarkCategories = ["全部", ...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+  state.categoryColors = CategoryColors.ensure(bookmarkCategories.slice(1), state.categoryColors).colors;
   updatePopupHeight(bookmarkCategories.length);
   const utilityViews = ["回收站"];
   const allViews = [...bookmarkCategories, ...activityViews, ...utilityViews];
@@ -163,11 +181,16 @@ function render() {
       : c === "最近浏览" ? state.recentSites.length
       : c === "回收站" ? state.recycleBin.length
       : state.bookmarks.filter(b => b.category === c).length;
-    const icon = c === "全部" ? "⌂" : c === "常用网址" ? "★" : c === "最近浏览" ? "◷" : c === "回收站" ? "♲" : (c.trim().charAt(0) || "#");
+    const isCategory = !activityViews.includes(c) && c !== "全部" && c !== "回收站";
+    const icon = c === "全部" ? "⌂" : c === "常用网址" ? "★" : c === "最近浏览" ? "◷" : "♲";
     const kind = activityViews.includes(c) ? ` activity-icon activity-${index}` : "";
-    const tone = getCategoryTone(c);
-    return `<button class="filter-chip tone-${tone} ${c === state.activeFilter ? "active" : ""}" data-filter="${escapeAttr(c)}">
-      <span class="filter-icon${kind}">${escapeHtml(icon)}</span><span class="filter-name">${escapeHtml(viewLabel(c))}</span><span class="filter-count">${count}</span>
+    const tone = isCategory ? "category" : getCategoryTone(c);
+    const colorStyle = isCategory ? ` style="${escapeAttr(CategoryColors.cssVariables(categoryColor(c)))}"` : "";
+    const marker = isCategory
+      ? `<span class="category-marker" aria-hidden="true"></span>`
+      : `<span class="filter-icon${kind}">${escapeHtml(icon)}</span>`;
+    return `<button class="filter-chip ${isCategory ? "category-filter" : ""} tone-${tone} ${c === state.activeFilter ? "active" : ""}" data-filter="${escapeAttr(c)}"${colorStyle}>
+      ${marker}<span class="filter-name">${escapeHtml(viewLabel(c))}</span><span class="filter-count">${count}</span>
     </button>`;
   };
   els.filters.innerHTML = `
@@ -222,12 +245,13 @@ function render() {
       : item.summary;
     const savedBookmark = isHistory ? bookmarkByUrl.get(canonicalUrl(item.url)) : null;
     const pill = savedBookmark?.category || (isHistory ? "" : (item.category || "未分类"));
-    const pillTone = savedBookmark ? getCategoryTone(savedBookmark.category || "") : getCategoryTone(item.category || "");
+    const pillStyle = CategoryColors.cssVariables(categoryColor(pill));
     const pillTitle = savedBookmark ? (I18n.language === "en" ? `Saved to “${categoryLabel(pill)}”` : `已收藏到“${pill}”`) : categoryLabel(pill);
     const displayTags = (savedBookmark?.tags || item.tags || []).filter(Boolean).map(tag => String(tag).replace(/^#+\s*/, "")).slice(0, 3);
     const tagsMarkup = displayTags.map(tag => `<span class="content-tag">#${highlightSearchText(tag, keyword)}</span>`).join("");
     const editableId = isHistory ? savedBookmark?.id : item.id;
     const aiStatusMarkup = !isHistory && !isTrash ? renderAiStatus(item) : "";
+    const confidenceMarkup = !isHistory && !isTrash ? renderConfidence(item) : "";
     const actionsMarkup = isTrash
       ? `<div class="card-actions trash-actions"><button class="restore-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("恢复收藏"))}">${escapeHtml(t("恢复"))}</button><button class="purge-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("彻底删除"))}">×</button></div>`
       : isHistory
@@ -237,7 +261,7 @@ function render() {
       <div class="bookmark-main" title="${escapeAttr(summary || item.url)}">
         <div class="bookmark-title">${highlightSearchText(item.title || item.url, keyword)}</div>
         ${summary ? `<div class="bookmark-summary">${highlightSearchText(summary, keyword)}</div>` : ""}
-        <div class="bookmark-meta">${pill ? `<span class="category-pill pill-${pillTone}" title="${escapeAttr(pillTitle)}">${highlightSearchText(categoryLabel(pill), keyword)}</span>` : ""}${tagsMarkup}${aiStatusMarkup}<span class="bookmark-host">${highlightSearchText(isTrash ? (I18n.language === "en" ? `Deleted ${relativeTime(item.deletedAt)}` : `删除于 ${relativeTime(item.deletedAt)}`) : host, keyword)}</span></div>
+        <div class="bookmark-meta">${pill ? `<span class="category-pill" style="${escapeAttr(pillStyle)}" title="${escapeAttr(pillTitle)}">${highlightSearchText(categoryLabel(pill), keyword)}</span>` : ""}${tagsMarkup}${aiStatusMarkup}${confidenceMarkup}<span class="bookmark-host">${highlightSearchText(isTrash ? (I18n.language === "en" ? `Deleted ${relativeTime(item.deletedAt)}` : `删除于 ${relativeTime(item.deletedAt)}`) : host, keyword)}</span></div>
       </div>
       ${actionsMarkup}
     </article>`;
@@ -291,6 +315,20 @@ function renderAiStatus(item) {
   return `<span class="ai-status ai-${tone}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
 }
 
+function renderConfidence(item) {
+  const score = Number(item.aiConfidence);
+  if (!Number.isFinite(score)) return "";
+  const level = item.aiConfidenceLevel || (score < 0.6 ? "low" : score < 0.8 ? "medium" : "high");
+  const percent = Math.round(Math.max(0, Math.min(1, score)) * 100);
+  const sourceLabels = {
+    "open-tab": I18n.language === "en" ? "open page content" : "已打开网页正文",
+    "public-fetch": I18n.language === "en" ? "public page text" : "公开网页正文",
+    "title-url": I18n.language === "en" ? "title and URL only" : "仅标题和网址"
+  };
+  const title = [I18n.language === "en" ? `Classification confidence ${percent}%` : `分类置信度 ${percent}%`, sourceLabels[item.aiContentSource], item.aiConfidenceReason].filter(Boolean).join(" · ");
+  return `<span class="confidence-badge confidence-${level}" title="${escapeAttr(title)}">AI ${percent}%</span>`;
+}
+
 function purgeExpiredTrash(items) {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   return items.filter(item => Number(item.deletedAt || 0) >= cutoff && item.bookmark);
@@ -308,49 +346,64 @@ async function classifyWithAI(usageFeature = "classification") {
   els.ai.querySelector("span").textContent = t("正在分析…");
   let usageRecorded = false;
   let requestStarted = false;
+  let inputOptimization = null;
   try {
     const categories = state.settings.categories || DEFAULT_CATEGORIES;
-    const endpoint = normalizeEndpoint(state.settings.apiUrl);
     const categoryCandidates = categories.map(category => `${category}${categoryLabel(category) !== category ? ` (${categoryLabel(category)})` : ""}`).join(", ");
-    const pageContent = await extractPageContent();
+    const rawPageContent = await extractPageContent();
+    const compactedContent = ModelText.compactPageContent(rawPageContent, 2600);
+    inputOptimization = { originalTokens: compactedContent.originalTokens, sentTokens: compactedContent.estimatedTokens };
+    const pageContent = compactedContent.text;
+    const compactTitle = ModelText.compactField(els.title.value, 400);
+    const compactUrl = ModelText.compactField(state.currentUrl, 1200);
     requestStarted = true;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.settings.apiKey}` },
-      body: JSON.stringify({
-        model: state.settings.model,
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: I18n.language === "en"
-            ? `You organize web bookmarks. Select exactly one category identifier from the candidates and generate 2-4 short English tags plus a concise 40-90 word English summary. Cover the core topic, key information, and intended use without inventing facts. Return JSON only: {"category":"exact identifier","tags":["tag"],"summary":"summary"}. Candidates: ${categoryCandidates}`
-            : `你是网址收藏整理助手。请根据网页标题、网址和正文，从候选分类中选择最合适的一项，并生成2-4个简短中文标签和60-120字的中文内容摘要。摘要应概括核心主题、主要信息和网页用途，不能编造。只返回JSON：{"category":"分类","tags":["标签"],"summary":"摘要"}。候选分类：${categories.join("、")}` },
-          { role: "user", content: I18n.language === "en"
-            ? `Title: ${els.title.value}\nURL: ${state.currentUrl}\nPage content:\n${pageContent || "Page content is unavailable. Infer from the title and URL."}`
-            : `标题：${els.title.value}\n网址：${state.currentUrl}\n网页正文：\n${pageContent || "正文暂时无法读取，请根据标题和网址判断。"}` }
-        ]
+    const english = I18n.language === "en";
+    const requestBody = AiClient.buildRequest({
+      model: state.settings.model,
+      maxOutputTokens: 320,
+      messages: AiClient.classificationMessages({
+        english,
+        candidateText: english ? categoryCandidates : categories.join("、"),
+        title: compactTitle,
+        url: compactUrl,
+        pageContent
       })
     });
+    const response = await AiClient.request({ apiUrl: state.settings.apiUrl, apiKey: state.settings.apiKey, body: requestBody });
     if (!response.ok) {
       usageRecorded = true;
-      await reportModelUsage(usageFeature, null, false);
-      const error = await response.text();
-      throw new Error(I18n.language === "en" ? `Request failed (${response.status})${error ? `: ${error.slice(0, 80)}` : ""}` : `请求失败（${response.status}）${error ? `：${error.slice(0, 80)}` : ""}`);
+      await reportModelUsage(usageFeature, null, false, inputOptimization);
+      throw new Error(I18n.language === "en" ? `Request failed (${response.status})${response.errorText ? `: ${response.errorText.slice(0, 80)}` : ""}` : `请求失败（${response.status}）${response.errorText ? `：${response.errorText.slice(0, 80)}` : ""}`);
     }
-    const data = await response.json();
+    const data = response.data;
     usageRecorded = true;
-    await reportModelUsage(usageFeature, data.usage, true);
-    const content = data.choices?.[0]?.message?.content;
+    await reportModelUsage(usageFeature, data.usage, true, inputOptimization);
+    const content = response.content;
     if (!content) throw new Error(I18n.language === "en" ? "The model returned no classification" : "模型没有返回分类结果");
-    const result = parseJson(content);
+    const result = parseModelJson(content);
+    if (!result) throw new Error(I18n.language === "en" ? "Could not parse the model response" : "无法识别模型返回内容");
     const category = categories.includes(result.category) ? result.category : "稍后阅读";
     state.currentCategory = category;
     state.currentTags = Array.isArray(result.tags) ? result.tags.slice(0, 4).map(String) : [];
     state.currentSummary = String(result.summary || "").trim();
+    let confidence = Number(result.confidence);
+    if (confidence > 1 && confidence <= 100) confidence /= 100;
+    if (!Number.isFinite(confidence)) confidence = rawPageContent ? 0.84 : 0.42;
+    confidence = Math.max(0, Math.min(1, confidence));
+    if (!rawPageContent) confidence = Math.min(confidence, 0.5);
+    else if (rawPageContent.length < 200) confidence = Math.min(confidence, 0.58);
+    state.currentConfidence = Math.round(confidence * 100) / 100;
+    state.currentConfidenceReason = String(result.confidenceReason || "").trim().slice(0, 240);
+    state.currentContentSource = rawPageContent ? "open-tab" : "title-url";
+    state.currentContentLength = rawPageContent.length;
+    state.currentContentFingerprint = ModelText.fingerprint(rawPageContent);
+    state.currentInputTokens = compactedContent.estimatedTokens;
+    state.currentOriginalInputTokens = compactedContent.originalTokens;
     els.category.value = category;
     showAiResult();
     showToast(I18n.language === "en" ? "AI classification complete" : "AI 分类完成");
   } catch (error) {
-    if (requestStarted && !usageRecorded) await reportModelUsage(usageFeature, null, false);
+    if (requestStarted && !usageRecorded) await reportModelUsage(usageFeature, null, false, inputOptimization);
     showToast(error.message || (I18n.language === "en" ? "Classification failed; check the model settings" : "分类失败，请检查模型配置"));
   } finally {
     els.ai.disabled = false;
@@ -382,39 +435,42 @@ async function generateSummary() {
   els.summaryBtn.querySelector("span").textContent = t("正在读取…");
   let usageRecorded = false;
   let requestStarted = false;
+  let inputOptimization = null;
   try {
-    const pageContent = await extractPageContent();
-    if (!pageContent) throw new Error(I18n.language === "en" ? "Could not read the current page" : "未能读取当前页面正文");
+    const rawPageContent = await extractPageContent();
+    if (!rawPageContent) throw new Error(I18n.language === "en" ? "Could not read the current page" : "未能读取当前页面正文");
+    const compactedContent = ModelText.compactPageContent(rawPageContent, 3200);
+    const pageContent = compactedContent.text;
+    inputOptimization = { originalTokens: compactedContent.originalTokens, sentTokens: compactedContent.estimatedTokens };
     els.summaryBtn.querySelector("span").textContent = t("正在总结…");
     requestStarted = true;
-    const response = await fetch(normalizeEndpoint(state.settings.apiUrl), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.settings.apiKey}` },
-      body: JSON.stringify({
-        model: state.settings.model,
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: I18n.language === "en" ? "Write a concise, accurate 40-90 word English summary covering the page's core topic, key information, and intended use. Do not add a title, Markdown, or unsupported facts. Return only the summary." : "你是网页内容摘要助手。请用简洁、准确的中文写一段60-120字摘要，包含网页的核心主题、主要信息和用途。不要添加标题、Markdown或网页中没有的信息，只返回摘要正文。" },
-          { role: "user", content: I18n.language === "en" ? `Page title: ${els.title.value}\nURL: ${state.currentUrl}\nPage content:\n${pageContent}` : `网页标题：${els.title.value}\n网页地址：${state.currentUrl}\n网页正文：\n${pageContent}` }
-        ]
+    const summaryBody = AiClient.buildRequest({
+      model: state.settings.model,
+      maxOutputTokens: 220,
+      messages: AiClient.summaryMessages({
+        english: I18n.language === "en",
+        title: ModelText.compactField(els.title.value, 400),
+        url: ModelText.compactField(state.currentUrl, 1200),
+        pageContent
       })
     });
+    const response = await AiClient.request({ apiUrl: state.settings.apiUrl, apiKey: state.settings.apiKey, body: summaryBody });
     if (!response.ok) {
       usageRecorded = true;
-      await reportModelUsage("summary", null, false);
+      await reportModelUsage("summary", null, false, inputOptimization);
       throw new Error(I18n.language === "en" ? `Summary request failed (${response.status})` : `摘要请求失败（${response.status}）`);
     }
-    const data = await response.json();
+    const data = response.data;
     usageRecorded = true;
-    await reportModelUsage("summary", data.usage, true);
-    const summary = String(data.choices?.[0]?.message?.content || "")
+    await reportModelUsage("summary", data.usage, true, inputOptimization);
+    const summary = String(response.content || "")
       .replace(/^```(?:text)?/i, "").replace(/```$/i, "").replace(/^摘要[：:]\s*/, "").trim();
     if (!summary) throw new Error(I18n.language === "en" ? "The model returned no summary" : "模型没有返回摘要");
     state.currentSummary = summary;
     els.summary.value = state.currentSummary;
     showToast(I18n.language === "en" ? "Summary generated" : "内容摘要已生成");
   } catch (error) {
-    if (requestStarted && !usageRecorded) await reportModelUsage("summary", null, false);
+    if (requestStarted && !usageRecorded) await reportModelUsage("summary", null, false, inputOptimization);
     showToast(error.message || (I18n.language === "en" ? "Summary generation failed" : "摘要生成失败"));
   } finally {
     els.summaryBtn.disabled = false;
@@ -424,27 +480,7 @@ async function generateSummary() {
 }
 
 async function extractPageContent() {
-  try {
-    const tabs = await chrome.tabs.query({});
-    const matchingTab = tabs.find(tab => tab.id && canonicalUrl(tab.url) === canonicalUrl(state.currentUrl));
-    const tabId = matchingTab?.id;
-    if (!tabId) return "";
-    const [{ result = "" } = {}] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const meta = document.querySelector('meta[name="description"], meta[property="og:description"]')?.content || "";
-        const source = document.querySelector("article, main, [role='main']") || document.body;
-        if (!source) return meta;
-        const copy = source.cloneNode(true);
-        copy.querySelectorAll("script, style, noscript, svg, canvas, iframe, nav, header, footer, aside, form, button").forEach(node => node.remove());
-        const text = (copy.innerText || copy.textContent || "").replace(/\s+/g, " ").trim();
-        return [meta, text].filter(Boolean).join("\n").slice(0, 10000);
-      }
-    });
-    return result;
-  } catch {
-    return "";
-  }
+  return PageContent.extractOpenPageContent(state.currentUrl);
 }
 
 function syncCurrentUrlFromForm() {
@@ -476,7 +512,17 @@ async function saveBookmark() {
     ...(existing || {}), id: existing?.id || crypto.randomUUID(), title, url: state.currentUrl,
     category: els.category.value, tags: state.currentTags, summary: state.currentSummary,
     aiStatus: state.currentSummary || state.currentTags.length ? "completed" : (modelReady && autoClassify ? "pending" : "idle"),
-    aiError: "", createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
+    aiError: "",
+    aiConfidence: state.currentConfidence ?? existing?.aiConfidence ?? null,
+    aiConfidenceLevel: state.currentConfidence == null ? existing?.aiConfidenceLevel : (state.currentConfidence < 0.6 ? "low" : state.currentConfidence < 0.8 ? "medium" : "high"),
+    aiConfidenceReason: state.currentConfidenceReason || existing?.aiConfidenceReason || "",
+    aiContentSource: state.currentContentSource || existing?.aiContentSource || "",
+    aiContentLength: state.currentContentLength || existing?.aiContentLength || 0,
+    aiContentFingerprint: state.currentContentFingerprint || existing?.aiContentFingerprint || "",
+    aiInputEstimatedTokens: state.currentInputTokens || existing?.aiInputEstimatedTokens || 0,
+    aiInputOriginalEstimatedTokens: state.currentOriginalInputTokens || existing?.aiInputOriginalEstimatedTokens || 0,
+    aiConfidenceAssessedAt: state.currentConfidence == null ? existing?.aiConfidenceAssessedAt : new Date().toISOString(),
+    createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   state.bookmarks = existing
     ? state.bookmarks.map(item => item.id === existing.id ? bookmark : item)
@@ -582,48 +628,13 @@ async function retryAiProcessing(bookmarkId) {
   }
 }
 
-function normalizeEndpoint(url) {
-  const clean = url.trim().replace(/\/$/, "");
-  if (/\/chat\/completions$/i.test(clean)) return clean;
-  if (/\/v1$/i.test(clean)) return `${clean}/chat/completions`;
-  return `${clean}/v1/chat/completions`;
-}
-
-function parseJson(content) {
-  const cleaned = content.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("无法识别模型返回内容");
-  return JSON.parse(match[0]);
-}
-
-async function reportModelUsage(feature, usage, success) {
+async function reportModelUsage(feature, usage, success, optimization = null) {
   try {
     await chrome.runtime.sendMessage({
       type: "record-model-usage",
-      payload: { feature, usage, success, model: state.settings.model }
+      payload: { feature, usage, success, model: state.settings.model, optimization }
     });
   } catch {}
-}
-
-function isWebUrl(url = "") {
-  return /^https?:/i.test(url);
-}
-
-function canonicalUrl(value = "") {
-  try {
-    const url = new URL(value);
-    url.protocol = "https:";
-    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    url.port = "";
-    url.hash = "";
-    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
-    const tracking = /^(utm_[a-z]+|fbclid|gclid|yclid|mc_[a-z]+|ref|referrer|source)$/i;
-    [...url.searchParams.keys()].forEach(key => { if (tracking.test(key)) url.searchParams.delete(key); });
-    url.searchParams.sort();
-    return url.toString();
-  } catch {
-    return String(value).replace(/#.*$/, "").replace(/\/+$/, "");
-  }
 }
 
 function historyItem(item, viewType, index, durationMs = 0) {
@@ -672,11 +683,17 @@ function relativeTime(timestamp) {
 
 function getCategoryTone(category) {
   const tones = {
-    "全部": "all", "稍后阅读": "violet", "工作效率": "cyan", "技术开发": "blue",
-    "设计灵感": "rose", "学习资料": "amber", "生活兴趣": "green", "新闻资讯": "orange",
-    "工具服务": "red", "常用网址": "gold", "最近浏览": "purple"
+    "全部": "all", "常用网址": "gold", "最近浏览": "purple"
   };
   return tones[category] || "slate";
+}
+
+function categoryColor(category) {
+  const key = String(category || "未分类");
+  if (!state.categoryColors[key]) {
+    state.categoryColors = CategoryColors.ensure([...Object.keys(state.categoryColors), key], state.categoryColors).colors;
+  }
+  return state.categoryColors[key];
 }
 
 function fuzzyMatch(text, query) {
@@ -761,6 +778,13 @@ function openEditModal(bookmarkId) {
   state.currentUrl = bookmark.url;
   state.currentTags = [...(bookmark.tags || [])];
   state.currentSummary = bookmark.summary || "";
+  state.currentConfidence = Number.isFinite(Number(bookmark.aiConfidence)) ? Number(bookmark.aiConfidence) : null;
+  state.currentConfidenceReason = bookmark.aiConfidenceReason || "";
+  state.currentContentSource = bookmark.aiContentSource || "";
+  state.currentContentLength = Number(bookmark.aiContentLength || 0);
+  state.currentContentFingerprint = bookmark.aiContentFingerprint || "";
+  state.currentInputTokens = Number(bookmark.aiInputEstimatedTokens || 0);
+  state.currentOriginalInputTokens = Number(bookmark.aiInputOriginalEstimatedTokens || 0);
   els.captureEyebrow.textContent = t("编辑收藏");
   els.captureTitle.textContent = t("修改收藏信息");
   els.title.value = bookmark.title || bookmark.url;
@@ -848,7 +872,6 @@ async function resolveNativeDeletion(deleteFromPlugin) {
   }
 }
 
-function escapeHtml(value = "") { return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function escapeAttr(value = "") { return escapeHtml(value); }
 
 els.ai.addEventListener("click", () => classifyWithAI());
@@ -929,6 +952,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     state.settings = changes.settings.newValue || {};
     const selected = els.category.value;
     const categories = [...new Set([...(state.settings.categories || DEFAULT_CATEGORIES), ...state.bookmarks.map(b => b.category).filter(Boolean)])];
+    const storedColors = state.settings.categoryColorVersion === CategoryColors.VERSION ? state.settings.categoryColors || {} : state.categoryColors;
+    state.categoryColors = CategoryColors.ensure(categories, storedColors).colors;
     els.category.innerHTML = categories.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
     if (categories.includes(selected)) els.category.value = selected;
     updateModelStatus();

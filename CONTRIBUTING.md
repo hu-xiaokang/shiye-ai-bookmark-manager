@@ -21,6 +21,7 @@
 - 提交前至少执行：
 
 ```bash
+node --test
 node --check popup.js
 node --check options.js
 node --check background.js

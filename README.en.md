@@ -31,6 +31,7 @@ ShiYe is a local-first Chrome bookmark manager that requires no account. It sync
 - **Bring your own key**: works with OpenAI Chat Completions-compatible APIs.
 - **Chrome bookmark sync**: listens for native bookmark creation, updates, and deletion.
 - **AI organization**: automatically generates categories, tags, and complete summaries.
+- **Token efficient**: compacts long pages while retaining the beginning, middle, and end, and caps model output.
 - **High-speed search**: searches titles, summaries, tags, categories, URLs, and domains.
 - **Reliable data management**: trash, duplicate merging, safety snapshots, and import preview.
 - **Multilingual**: Simplified Chinese and English are included, with an extensible language resource system.
@@ -77,21 +78,23 @@ Untranslated strings fall back to Simplified Chinese, so a new locale can be int
 ## Features
 
 - Save and edit the current page.
+- Scan existing Chrome bookmarks, preview new, linked, and duplicate items, then organize them in bulk with AI.
 - Edit bookmark titles, URLs, categories, summaries, and tags.
 - Automatically classify, tag, and summarize pages with AI.
+- Score AI classification confidence and optionally review a low-confidence bookmark once when its full page content becomes available.
 - Full-library fuzzy search with `⌘/Ctrl + K` or `/` to focus.
 - Frequently visited ranking based on visit frequency, recency, typed visits, and active browsing time.
 - Recently visited pages ordered strictly by the latest visit time.
 - Custom categories with distinct colors.
 - Native Chrome bookmark synchronization.
-- Local model usage statistics, including requests, success rate, and tokens.
+- Local model usage statistics, including requests, success rate, tokens, and estimated input-token savings.
 - Trash with undo, restore, permanent deletion, and 30-day retention.
 - Duplicate URL detection and merging.
 - Safe JSON export, import preview, merging, replacement, and safety snapshots.
 
 ## Privacy
 
-Bookmarks, browsing metrics, and settings are stored locally. Browsing history is used only for the frequently and recently visited views. Page titles, URLs, and readable page content are sent only to the model endpoint configured by the user when an AI feature runs.
+Bookmarks, browsing metrics, and settings are stored locally. Browsing history is used only for the frequently and recently visited views. When AI organization runs, bookmark titles, URLs, and readable public page text are sent only to the model endpoint configured by the user. Public pages are fetched without cookies, and local or private-network addresses are not fetched in the background.
 
 See [PRIVACY.md](PRIVACY.md) for details.
 
@@ -100,7 +103,13 @@ See [PRIVACY.md](PRIVACY.md) for details.
 ```text
 ├── manifest.json        # Chrome Manifest V3 manifest
 ├── i18n.js              # Runtime language resources and translation helper
+├── category-colors.js   # Stable, high-contrast automatic category colors
+├── model-utils.js       # Input compaction, token estimation, and output budgets
+├── app-utils.js         # URL normalization, response parsing, and safe escaping
+├── ai-client.js         # Shared model prompts, requests, and response contract
+├── page-content.js      # Tab extraction, public-page fetching, and safety filters
 ├── _locales/            # Chrome extension name, description, and action translations
+├── tests/               # Shared modules, colors, token optimization, and import tests
 ├── background.js        # Bookmark sync, AI queue, and browsing metrics
 ├── popup.html/js/css    # Main extension interface
 ├── options.html/js/css  # Settings and data management
