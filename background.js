@@ -1,21 +1,44 @@
-importScripts("model-utils.js", "app-utils.js", "ai-client.js", "page-content.js");
+importScripts("model-utils.js", "app-utils.js", "ai-client.js", "page-content.js", "bookmark-model.js");
 
 const { canonicalUrl, parseModelJson } = AppUtils;
 const { extractPageContext } = PageContent;
 
-const DEFAULT_CATEGORY = "稍后阅读";
+const DEFAULT_CATEGORY = BookmarkModel.UNCLASSIFIED_CATEGORY;
 const ACTIVE_SESSIONS_KEY = "activeBrowsingSessions";
 const METRICS_KEY = "browsingMetrics";
 const PENDING_DELETIONS_KEY = "pendingNativeDeletions";
 const MODEL_USAGE_KEY = "modelUsage";
 const RECYCLE_BIN_KEY = "recycleBin";
 const NATIVE_IMPORT_JOB_KEY = "nativeBookmarkImportJob";
+const READ_LATER_EXPIRY_ALARM = "read-later-expiry";
 const MIN_SESSION_MS = 3_000;
 const MAX_SESSION_MS = 4 * 60 * 60 * 1_000;
 let bookmarkSyncQueue = Promise.resolve();
 let modelUsageQueue = Promise.resolve();
 let nativeImportRunning = false;
 const confidenceReprocessQueue = new Set();
+
+async function clearExpiredReadLaterMarkers(now = Date.now()) {
+  const data = await chrome.storage.local.get(["bookmarks", "readLaterItems"]);
+  let bookmarksChanged = false;
+  const bookmarks = (data.bookmarks || []).map(bookmark => {
+    const expiresAt = BookmarkModel.expiryTime(bookmark.readLaterUntil);
+    if (!bookmark.readLater || expiresAt == null || expiresAt > now) return bookmark;
+    bookmarksChanged = true;
+    return { ...bookmark, readLater: false, readLaterUntil: null, updatedAt: new Date(now).toISOString() };
+  });
+  const readLaterItems = (data.readLaterItems || []).filter(item => BookmarkModel.isReadLaterActive(item, now));
+  const readLaterItemsChanged = readLaterItems.length !== (data.readLaterItems || []).length;
+  if (bookmarksChanged || readLaterItemsChanged) {
+    await chrome.storage.local.set({ ...(bookmarksChanged ? { bookmarks } : {}), ...(readLaterItemsChanged ? { readLaterItems } : {}) });
+  }
+  return bookmarksChanged || readLaterItemsChanged;
+}
+
+async function ensureReadLaterExpiryAlarm() {
+  await chrome.alarms.create(READ_LATER_EXPIRY_ALARM, { periodInMinutes: 1 });
+  await clearExpiredReadLaterMarkers();
+}
 
 function useEnglish(settings = {}) {
   if (settings.language === "en") return true;
@@ -104,27 +127,18 @@ function isTrackableUrl(url = "") {
   return /^https?:/i.test(url);
 }
 
-function confidenceLevel(score) {
-  return score < 0.6 ? "low" : score < 0.8 ? "medium" : "high";
-}
-
 function evaluateClassificationConfidence(result = {}, pageContext = {}, categoryRecognized = true) {
-  let modelScore = Number(result.confidence);
-  if (modelScore > 1 && modelScore <= 100) modelScore /= 100;
-  if (!Number.isFinite(modelScore)) {
-    modelScore = pageContext.source === "open-tab" ? 0.84 : pageContext.source === "public-fetch" ? 0.7 : 0.42;
-  }
-  let score = Math.max(0, Math.min(1, modelScore));
   const contentLength = String(pageContext.content || "").length;
-  if (pageContext.source === "title-url") score = Math.min(score, 0.5);
-  if (pageContext.source === "public-fetch") score = Math.min(score, 0.82);
-  if (contentLength > 1500) score = Math.min(0.98, score + 0.04);
-  else if (contentLength > 0 && contentLength < 200) score = Math.min(score, 0.58);
-  if (!categoryRecognized) score = Math.min(score, 0.35);
-  if (!String(result.summary || "").trim() || !Array.isArray(result.tags) || !result.tags.length) score = Math.min(score, 0.55);
-  score = Math.round(score * 100) / 100;
+  const confidence = AiClient.calculateConfidence({
+    modelConfidence: result.confidence,
+    source: pageContext.source || "title-url",
+    contentLength,
+    categoryRecognized,
+    hasSummary: Boolean(String(result.summary || "").trim()),
+    hasTags: Array.isArray(result.tags) && result.tags.length > 0
+  });
   return {
-    score, level: confidenceLevel(score),
+    score: confidence.score, level: confidence.level,
     reason: String(result.confidenceReason || "").trim().slice(0, 240),
     source: pageContext.source || "title-url"
   };
@@ -143,7 +157,7 @@ async function autoClassifyBookmark(pluginBookmarkId, settings, force = false, t
   let usageRecorded = false;
   let inputOptimization = null;
   try {
-    const categories = settings.categories?.length ? settings.categories : [DEFAULT_CATEGORY];
+    const categories = BookmarkModel.normalizeCategories(settings.categories);
     const pageContext = providedPageContext || await extractPageContext(bookmark.url);
     const compactedContent = ModelText.compactPageContent(pageContext.content, 2600);
     const pageContent = compactedContent.text;
@@ -251,13 +265,14 @@ async function maybeReclassifyLowConfidence(tab) {
   const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
   const bookmark = bookmarks.find(item => canonicalUrl(item.url) === canonicalUrl(tab.url));
   if (!bookmark || !Number.isFinite(Number(bookmark.aiConfidence))) return { triggered: false };
-  if (Number(bookmark.aiConfidence) >= threshold || bookmark.aiContentSource === "open-tab") return { triggered: false };
+  const alreadyHasRenderedContent = bookmark.aiContentSource === "open-tab" && Number(bookmark.aiContentLength || 0) >= 250;
+  if (Number(bookmark.aiConfidence) >= threshold || alreadyHasRenderedContent) return { triggered: false };
   if (bookmark.confidenceReprocessPending || Number(bookmark.confidenceReprocessCount || 0) >= 1) return { triggered: false };
   if (["pending", "processing"].includes(bookmark.aiStatus) || confidenceReprocessQueue.has(bookmark.id)) return { triggered: false };
 
   confidenceReprocessQueue.add(bookmark.id);
   try {
-    const pageContext = await extractPageContext(bookmark.url);
+    const pageContext = await extractPageContext(bookmark.url, { renderWaitMs: 900, minimumLength: 250 });
     if (pageContext.source !== "open-tab" || String(pageContext.content || "").length < 250) return { triggered: false };
     const nextFingerprint = ModelText.fingerprint(pageContext.content);
     const previousLength = Number(bookmark.aiContentLength || 0);
@@ -273,6 +288,19 @@ async function maybeReclassifyLowConfidence(tab) {
     return { triggered: true, success: Boolean(result?.success), result };
   } finally {
     confidenceReprocessQueue.delete(bookmark.id);
+  }
+}
+
+function scheduleConfidenceReview(tab, delays) {
+  if (!tab?.id || !isTrackableUrl(tab.url)) return;
+  for (const delay of delays) {
+    setTimeout(async () => {
+      try {
+        const currentTab = await chrome.tabs.get(tab.id);
+        if (canonicalUrl(currentTab.url) !== canonicalUrl(tab.url)) return;
+        await maybeReclassifyLowConfidence(currentTab);
+      } catch {}
+    }, delay);
   }
 }
 
@@ -436,6 +464,7 @@ chrome.runtime.onInstalled.addListener(() => {
   }));
   startFocusedTab();
   purgeRecycleBin().catch(() => {});
+  ensureReadLaterExpiryAlarm().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -443,6 +472,7 @@ chrome.runtime.onStartup.addListener(() => {
   refreshPendingDeletionBadge();
   purgeRecycleBin().catch(() => {});
   syncContextMenuLanguage().catch(() => {});
+  ensureReadLaterExpiryAlarm().catch(() => {});
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -492,10 +522,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === READ_LATER_EXPIRY_ALARM) {
+    clearExpiredReadLaterMarkers().catch(() => {});
+    return;
+  }
   if (!alarm.name.startsWith("ai-retry:")) return;
   const bookmarkId = alarm.name.slice("ai-retry:".length);
   chrome.storage.local.get("settings").then(data => autoClassifyBookmark(bookmarkId, data.settings || {}, true)).catch(() => {});
 });
+
+ensureReadLaterExpiryAlarm().catch(() => {});
 
 async function retryAllAiTasks() {
   const data = await chrome.storage.local.get(["bookmarks", "settings"]);
@@ -660,13 +696,13 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
     const tab = await chrome.tabs.get(tabId);
     await startSession(tab);
-    if (tab.status === "complete") setTimeout(() => maybeReclassifyLowConfidence(tab).catch(() => {}), 800);
+    if (tab.status === "complete") scheduleConfidenceReview(tab, [500, 3000]);
   } catch {}
 });
 
 chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   if (tab.active && (changeInfo.url || changeInfo.status === "complete")) await startSession(tab);
-  if (tab.active && changeInfo.status === "complete") setTimeout(() => maybeReclassifyLowConfidence(tab).catch(() => {}), 1200);
+  if (tab.active && changeInfo.status === "complete") scheduleConfidenceReview(tab, [700, 3500, 8000]);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId, { windowId }) => {

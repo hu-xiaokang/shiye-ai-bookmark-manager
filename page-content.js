@@ -1,25 +1,72 @@
 (function (global) {
   function readDocumentText() {
     const meta = document.querySelector('meta[name="description"], meta[property="og:description"]')?.content || "";
-    const source = document.querySelector("article, main, [role='main']") || document.body;
+    let structured = "";
+    for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const value = JSON.parse(node.textContent || "null");
+        const entries = Array.isArray(value) ? value : [value];
+        const article = entries.find(item => item?.articleBody || item?.description);
+        if (article) structured = article.articleBody || article.description || "";
+      } catch {}
+      if (structured) break;
+    }
+    const candidates = [...document.querySelectorAll("article, main, [role='main'], .markdown-body, .article-content, .post-content")];
+    const source = candidates.filter(Boolean).sort((a, b) => (b.innerText || b.textContent || "").length - (a.innerText || a.textContent || "").length)[0] || document.body;
     if (!source) return meta;
     const copy = source.cloneNode(true);
     copy.querySelectorAll("script, style, noscript, svg, canvas, iframe, nav, header, footer, aside, form, button").forEach(node => node.remove());
     const text = (copy.innerText || copy.textContent || "").replace(/\s+/g, " ").trim();
-    return [meta, text].filter(Boolean).join("\n").slice(0, 10_000);
+    return [meta, structured, text].filter(Boolean).join("\n").slice(0, 10_000);
   }
 
-  async function extractOpenPageContent(url) {
+  function delay(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+  }
+
+  function bestFrameContent(results = []) {
+    return results.map(item => String(item?.result || "")).filter(value => value.trim()).sort((a, b) => b.length - a.length)[0] || "";
+  }
+
+  async function readTabContent(tabId) {
     try {
-      const tabs = await chrome.tabs.query({});
-      const tab = tabs.find(item => item.id && global.AppUtils.canonicalUrl(item.url) === global.AppUtils.canonicalUrl(url));
-      if (!tab) return "";
-      const [{ result = "" } = {}] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
         func: readDocumentText
       });
-      return result;
-    } catch { return ""; }
+      return bestFrameContent(results);
+    } catch {
+      try {
+        const results = await chrome.scripting.executeScript({ target: { tabId }, func: readDocumentText });
+        return bestFrameContent(results);
+      } catch { return ""; }
+    }
+  }
+
+  async function findOpenPage(url) {
+    try {
+      const normalized = global.AppUtils.canonicalUrl(url);
+      const tabs = await chrome.tabs.query({});
+      const matches = tabs.filter(item => item.id && global.AppUtils.canonicalUrl(item.url) === normalized);
+      matches.sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)));
+      return matches[0] || null;
+    } catch { return null; }
+  }
+
+  async function readOpenPage(url, { renderWaitMs = 700, minimumLength = 250 } = {}) {
+    const tab = await findOpenPage(url);
+    if (!tab) return { found: false, content: "", tabId: null };
+    let content = await readTabContent(tab.id);
+    if (renderWaitMs > 0 && content.length < minimumLength) {
+      await delay(renderWaitMs);
+      const renderedContent = await readTabContent(tab.id);
+      if (renderedContent.length > content.length) content = renderedContent;
+    }
+    return { found: true, content, tabId: tab.id };
+  }
+
+  async function extractOpenPageContent(url, options) {
+    return (await readOpenPage(url, options)).content;
   }
 
   function isPublicPageUrl(value) {
@@ -79,12 +126,12 @@
     finally { clearTimeout(timeout); }
   }
 
-  async function extractPageContext(url) {
-    const openContent = await extractOpenPageContent(url);
-    if (openContent) return { content: openContent, source: "open-tab" };
+  async function extractPageContext(url, options) {
+    const openPage = await readOpenPage(url, options);
+    if (openPage.found) return { content: openPage.content, source: "open-tab", tabId: openPage.tabId };
     const publicContent = await fetchPublicPageContent(url);
     return publicContent ? { content: publicContent, source: "public-fetch" } : { content: "", source: "title-url" };
   }
 
-  global.PageContent = { extractOpenPageContent, extractPageContext, isPublicPageUrl, htmlToPlainText, fetchPublicPageContent };
+  global.PageContent = { extractOpenPageContent, extractPageContext, isPublicPageUrl, htmlToPlainText, fetchPublicPageContent, bestFrameContent };
 })(globalThis);
