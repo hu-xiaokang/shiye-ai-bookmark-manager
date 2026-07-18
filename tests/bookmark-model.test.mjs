@@ -28,6 +28,21 @@ test("read-later is an independent expiring marker, not a category", () => {
   assert.equal(model.isReadLaterActive({ readLater: true, readLaterUntil: "2026-07-12T10:01:00.000Z" }, now), true);
   assert.equal(model.isReadLaterActive({ readLater: true, readLaterUntil: "2026-07-12T09:59:00.000Z" }, now), false);
   assert.equal(model.isReadLaterActive({ readLater: false, readLaterUntil: "2026-07-12T10:01:00.000Z" }, now), false);
+  assert.deepEqual(
+    { ...model.markReadLaterComplete({
+      id: "saved",
+      readLater: true,
+      readLaterUntil: "2026-07-15T10:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:00.000Z"
+    }, now) },
+    {
+      id: "saved",
+      readLater: false,
+      readLaterUntil: null,
+      readLaterCompletedAt: "2026-07-12T10:00:00.000Z",
+      updatedAt: "2026-07-12T10:00:00.000Z"
+    }
+  );
 
   const sorted = [
     { id: "no-expiry", readLaterUntil: null },

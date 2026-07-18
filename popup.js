@@ -275,6 +275,7 @@ function render() {
   const bookmarkByUrl = new Map(state.bookmarks.map(bookmark => [canonicalUrl(bookmark.url), bookmark]));
   const readLaterByUrl = new Map(state.readLaterItems.filter(item => BookmarkModel.isReadLaterActive(item)).map(item => [canonicalUrl(item.url), item]));
   const isActivityView = activityViews.includes(state.activeFilter);
+  const isReadLaterView = state.activeFilter === BookmarkModel.READ_LATER_LABEL;
   els.list.innerHTML = filtered.map(item => {
     let host = item.url;
     try { host = new URL(item.url).hostname.replace(/^www\./, ""); } catch {}
@@ -302,8 +303,11 @@ function render() {
     const readLaterMarkup = renderReadLaterMarker(readLaterRecord);
     const actionMenu = editableId && !isTrash && !isActivityView ? renderCardActionMenu(savedBookmark || item, editableId, !isHistory && (item.aiStatus === "failed" || item.aiStatus === "pending" || !item.summary)) : "";
     const historyReadLaterAction = isHistory ? renderHistoryReadLaterAction(readLaterRecord, item) : "";
+    const completeReadLaterAction = isReadLaterView ? renderCompleteReadLaterAction(item) : "";
     const actionsMarkup = isTrash
       ? `<div class="card-actions trash-actions"><button class="restore-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("恢复收藏"))}">${escapeHtml(t("恢复"))}</button><button class="purge-btn" data-trash-id="${escapeAttr(item.trashId)}" title="${escapeAttr(t("彻底删除"))}">×</button></div>`
+      : isReadLaterView
+      ? `<div class="card-actions read-later-actions">${completeReadLaterAction}</div>`
       : isHistory
       ? `<div class="card-actions">${historyReadLaterAction}</div>`
       : actionMenu ? `<div class="card-actions bookmark-actions">${actionMenu}</div>` : "";
@@ -347,6 +351,11 @@ function renderHistoryReadLaterAction(record, historyItem) {
     ? (I18n.language === "en" ? "Remove Read later" : "取消稍后阅读")
     : (I18n.language === "en" ? `Read later · ${readLaterDefaultDescription()}` : `稍后阅读 · ${readLaterDefaultDescription()}`);
   return `<button class="history-read-later-btn ${active ? "active" : ""}" data-history-read-later-url="${escapeAttr(historyItem.url)}" data-history-read-later-title="${escapeAttr(historyItem.title || historyItem.url)}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">◴</button>`;
+}
+
+function renderCompleteReadLaterAction(item) {
+  const label = t("标记完成");
+  return `<button class="complete-read-later-btn" data-complete-read-later-url="${escapeAttr(item.url)}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"><span>✓</span><strong>${escapeHtml(t("完成"))}</strong></button>`;
 }
 
 function renderCardActionMenu(bookmark, bookmarkId, showRetry = false) {
@@ -607,6 +616,7 @@ async function saveBookmark() {
     ...(existing || {}), id: existing?.id || crypto.randomUUID(), title, url: state.currentUrl,
     category: els.category.value, tags: state.currentTags, summary: state.currentSummary,
     readLater: els.readLater.checked, readLaterUntil,
+    readLaterCompletedAt: els.readLater.checked ? null : (existing?.readLaterCompletedAt || null),
     aiStatus: state.currentSummary || state.currentTags.length ? "completed" : (modelReady && autoClassify ? "pending" : "idle"),
     aiError: "",
     aiConfidence: state.currentConfidence ?? existing?.aiConfidence ?? null,
@@ -651,6 +661,7 @@ async function toggleReadLater(bookmarkId) {
     ...item,
     readLater: !active,
     readLaterUntil: active ? null : BookmarkModel.defaultReadLaterUntil(state.settings, now),
+    readLaterCompletedAt: active ? item.readLaterCompletedAt || null : null,
     updatedAt: new Date(now).toISOString()
   } : item);
   await chrome.storage.local.set({ bookmarks: state.bookmarks });
@@ -681,6 +692,23 @@ async function toggleHistoryReadLater(url, title) {
   showToast(active
     ? (I18n.language === "en" ? "Removed from Read later" : "已取消稍后阅读")
     : (I18n.language === "en" ? `Marked for later · ${readLaterDefaultDescription()}` : `已标记稍后阅读 · ${readLaterDefaultDescription()}`));
+}
+
+async function completeReadLater(url) {
+  const key = canonicalUrl(url);
+  const savedBookmark = state.bookmarks.find(item => canonicalUrl(item.url) === key && BookmarkModel.isReadLaterActive(item));
+  if (savedBookmark) {
+    state.bookmarks = state.bookmarks.map(item => item.id === savedBookmark.id
+      ? BookmarkModel.markReadLaterComplete(item)
+      : item);
+  }
+  state.readLaterItems = state.readLaterItems.filter(item => canonicalUrl(item.url) !== key);
+  await chrome.storage.local.set({
+    ...(savedBookmark ? { bookmarks: state.bookmarks } : {}),
+    readLaterItems: state.readLaterItems
+  });
+  render();
+  showToast(t("已完成阅读"));
 }
 
 function readLaterDefaultDescription() {
@@ -1135,6 +1163,8 @@ els.list.addEventListener("click", e => {
   if (readLaterButton) { closeCardActionMenus(); return toggleReadLater(readLaterButton.dataset.readLaterId); }
   const historyReadLaterButton = e.target.closest(".history-read-later-btn");
   if (historyReadLaterButton) return toggleHistoryReadLater(historyReadLaterButton.dataset.historyReadLaterUrl, historyReadLaterButton.dataset.historyReadLaterTitle);
+  const completeReadLaterButton = e.target.closest(".complete-read-later-btn");
+  if (completeReadLaterButton) return completeReadLater(completeReadLaterButton.dataset.completeReadLaterUrl);
   const deleteButton = e.target.closest(".delete-btn");
   if (deleteButton) { closeCardActionMenus(); return deleteBookmark(deleteButton.dataset.deleteId || card.dataset.id); }
   if (e.target.closest(".card-action-menu")) return;

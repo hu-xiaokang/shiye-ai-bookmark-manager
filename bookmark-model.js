@@ -40,9 +40,20 @@
     return days === 0 ? null : new Date(now + days * DAY_MS).toISOString();
   }
 
+  function markReadLaterComplete(bookmark, now = Date.now()) {
+    const completedAt = new Date(now).toISOString();
+    return {
+      ...bookmark,
+      readLater: false,
+      readLaterUntil: null,
+      readLaterCompletedAt: completedAt,
+      updatedAt: completedAt
+    };
+  }
+
   global.BookmarkModel = {
     READ_LATER_LABEL, UNCLASSIFIED_CATEGORY, DEFAULT_READ_LATER_EXPIRY_DAYS, DEFAULT_READ_LATER_DURATION_MS, DEFAULT_CATEGORIES,
     normalizeCategories, expiryTime, isReadLaterActive, compareReadLaterExpiry,
-    normalizeReadLaterExpiryDays, defaultReadLaterUntil
+    normalizeReadLaterExpiryDays, defaultReadLaterUntil, markReadLaterComplete
   };
 })(globalThis);
